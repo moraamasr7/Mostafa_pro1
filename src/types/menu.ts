@@ -1,3 +1,5 @@
+import { OrderType } from './orders'
+
 export interface MenuVariantRow {
   category_id: string;
   category_name: string;
@@ -19,6 +21,22 @@ export interface CartLine {
   price: number;
   quantity: number;
   item_notes?: string;
+}
+
+export interface OrderItemInput {
+  variant_id: string;
+  quantity: number;
+  item_notes?: string;
+}
+
+export interface CreateOrderPayload {
+  customer_name: string;
+  customer_phone: string;
+  notes?: string;
+  order_type?: OrderType;
+  delivery_address?: string;
+  items: OrderItemInput[];
+  turnstile_token: string;
 }
 
 export interface GroupedMenuItem {

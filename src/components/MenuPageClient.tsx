@@ -19,19 +19,21 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
   const [isCartOpen, setIsCartOpen] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  // رسالة خطأ من API لو حصل مشكلة أثناء الإرسال
   const [submitError, setSubmitError] = useState('')
 
-  // إضافة صنف للسلة — لو الحجم موجود فعلاً، نزود الكمية
+  // إضافة صنف للسلة — دمج الكمية لو نفس الحجم مضاف سابقاً لتجنب تكرار الصفوف
   const handleAddToCart = (line: CartLine) => {
     setCart((prev) => {
-      const existing = prev.find((l) => l.variant_id === line.variant_id)
-      if (existing) {
-        return prev.map((l) =>
-          l.variant_id === line.variant_id
-            ? { ...l, quantity: l.quantity + line.quantity, item_notes: line.item_notes || l.item_notes }
-            : l
-        )
+      const existingIndex = prev.findIndex((l) => l.variant_id === line.variant_id)
+      if (existingIndex > -1) {
+        const updated = [...prev]
+        const existing = updated[existingIndex]
+        updated[existingIndex] = {
+          ...existing,
+          quantity: Math.min(50, existing.quantity + line.quantity),
+          item_notes: line.item_notes || existing.item_notes,
+        }
+        return updated
       }
       return [...prev, line]
     })
@@ -42,15 +44,16 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
     setCart((prev) => prev.filter((l) => l.variant_id !== variantId))
   }
 
-  // تحديث الكمية — لو صفر أو أقل، نحذف الصنف
+  // تحديث الكمية — لو 0 أو أقل يتم حذف الصنف، أقصى حد 50
   const handleUpdateQuantity = (variantId: string, newQuantity: number) => {
     if (newQuantity <= 0) {
       handleRemoveItem(variantId)
       return
     }
+    const clampedQty = Math.min(50, newQuantity)
     setCart((prev) =>
       prev.map((l) =>
-        l.variant_id === variantId ? { ...l, quantity: newQuantity } : l
+        l.variant_id === variantId ? { ...l, quantity: clampedQty } : l
       )
     )
   }
@@ -61,7 +64,7 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
     setIsCheckoutOpen(true)
   }
 
-  // إرسال الطلب للـ API
+  // إرسال الطلب للـ API — نرسل فقط المفتاح والكمية والملاحظات (بدون إرسال الأسعار)
   const handleSubmitOrder = async (data: {
     customer_name: string
     customer_phone: string
@@ -72,11 +75,17 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
     setSubmitError('')
 
     try {
+      const orderItemsPayload = cart.map((line) => ({
+        variant_id: line.variant_id,
+        quantity: line.quantity,
+        item_notes: line.item_notes,
+      }))
+
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          items: cart,
+          items: orderItemsPayload,
           ...data,
         }),
       })
@@ -84,17 +93,23 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
       const result = await res.json()
 
       if (!res.ok) {
-        setSubmitError(result.error || 'حصل مشكلة. جرب تاني.')
+        setSubmitError(result.error || 'حصلت مشكلة أثناء تسجيل الطلب. حاول مرة أخرى.')
         setIsSubmitting(false)
+        // الاحتفاظ بالسلة كما هي لإتاحة إعادة المحاولة للعميل
         return
       }
 
-      // نجاح — تفريغ السلة والتوجيه لصفحة تتبع الطلب
+      // نجاح — تفريغ السلة والتوجيه لصفحة تتبع الطلب مع رمز التتبع الأمني
       setCart([])
       setIsCheckoutOpen(false)
-      router.push(`/order/${result.order_id}`)
+      
+      const trackingUrl = result.tracking_token
+        ? `/order/${result.order_id}?token=${result.tracking_token}`
+        : `/order/${result.order_id}`
+
+      router.push(trackingUrl)
     } catch {
-      setSubmitError('مفيش اتصال بالسيرفر. تأكد من الإنترنت.')
+      setSubmitError('تعذر الاتصال بالسيرفر. تأكد من الاتصال بالإنترنت حاول مرة أخرى.')
       setIsSubmitting(false)
     }
   }
@@ -134,7 +149,7 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
                   <div className="flex-1 h-px bg-gradient-to-l from-transparent via-amber-200 to-transparent" />
                 </div>
 
-                {/* بطاقات الأصناف — عمود واحد على الموبايل، عمودين على الشاشات الأوسع */}
+                {/* بطاقات الأصناف */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {category.items.map((item) => (
                     <MenuItemCard
