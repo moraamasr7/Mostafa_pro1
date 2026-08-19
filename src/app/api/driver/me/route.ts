@@ -3,6 +3,8 @@ import { cookies } from 'next/headers'
 import { supabase } from '@/lib/supabase'
 import { DRIVER_COOKIE_NAME } from '../login/route'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const cookieStore = await cookies()

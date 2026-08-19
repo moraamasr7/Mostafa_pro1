@@ -4,6 +4,8 @@ import { supabase } from '@/lib/supabase'
 import { isRestaurantOpen } from '@/lib/schedule'
 import { ADMIN_COOKIE_NAME } from '../login/route'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
   try {
     const status = await isRestaurantOpen()

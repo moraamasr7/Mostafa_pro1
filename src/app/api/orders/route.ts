@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { CreateOrderPayload, OrderItemInput } from '@/types/menu'
 
+export const dynamic = 'force-dynamic'
+
 // خريطة حفظ الطلبات المؤقتة لمنع الطلبات المكررة في التردد السريع (Anti-duplicate submissions)
 const recentOrdersMap = new Map<string, number>()
 
