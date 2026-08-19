@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { Turnstile } from '@marsidev/react-turnstile'
 import { OrderType } from '@/types/orders'
 import { PaymentMethod } from '@/types/menu'
+import { supabase } from '@/lib/supabase'
+import { compressImage } from '@/lib/imageCompression'
 
 interface CheckoutFormProps {
   isOpen: boolean
@@ -38,11 +40,59 @@ export default function CheckoutForm({
     initialOrderType === 'takeaway' ? 'instapay' : 'cash'
   )
   const [paymentReceipt, setPaymentReceipt] = useState('')
+  const [receiptPreview, setReceiptPreview] = useState('')
+  const [isUploadingReceipt, setIsUploadingReceipt] = useState(false)
+  const [uploadError, setUploadError] = useState('')
   const [notes, setNotes] = useState('')
   const [turnstileToken, setTurnstileToken] = useState('')
   const [phoneError, setPhoneError] = useState('')
 
   if (!isOpen) return null
+
+  // ضغط ورفع صورة إثبات التحويل إلى Supabase Bucket "receipts"
+  const handleReceiptFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setUploadError('')
+    setIsUploadingReceipt(true)
+
+    try {
+      // 1. ضغط الصورة على الكلاينت عبر HTML5 Canvas
+      const compressedBlob = await compressImage(file, 1200, 1200, 0.75)
+
+      // 2. إنشاء اسم ملف فريد
+      const fileName = `receipt-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.jpg`
+
+      // 3. رفع الملف إلى Supabase Bucket "receipts"
+      const { data, error } = await supabase.storage
+        .from('receipts')
+        .upload(fileName, compressedBlob, {
+          contentType: 'image/jpeg',
+          cacheControl: '3600',
+          upsert: false,
+        })
+
+      if (error) {
+        throw new Error(error.message || 'فشل رفع الصورة على السيرفر')
+      }
+
+      // 4. الحصول على الرابط العام (Public URL)
+      const { data: publicUrlData } = supabase.storage
+        .from('receipts')
+        .getPublicUrl(data.path)
+
+      const uploadedUrl = publicUrlData.publicUrl
+      setPaymentReceipt(uploadedUrl)
+      setReceiptPreview(uploadedUrl)
+    } catch (err: unknown) {
+      console.error('Receipt upload error:', err)
+      const errorMessage = err instanceof Error ? err.message : 'تعذر رفع الصورة'
+      setUploadError(errorMessage || 'حصلت مشكلة أثناء رفع صورة الإثبات. حاول مرة أخرى.')
+    } finally {
+      setIsUploadingReceipt(false)
+    }
+  }
 
   // التحقق من رقم الموبايل المصري
   const validatePhone = (value: string): boolean => {
@@ -93,7 +143,8 @@ export default function CheckoutForm({
     /^01\d{9}$/.test(phone.replace(/\s/g, '')) &&
     isAddressValid &&
     isReceiptValid &&
-    turnstileToken.length > 0
+    turnstileToken.length > 0 &&
+    !isUploadingReceipt
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -272,36 +323,95 @@ export default function CheckoutForm({
             )}
           </div>
 
-          {/* تعليمات التحويل وإدخال رقم العملية */}
+          {/* تعليمات التحويل وإرفاق صورة/رقم عملية التحويل */}
           {(orderType === 'takeaway' || paymentMethod !== 'cash') && (
-            <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-2xl space-y-2 animate-fade-in">
+            <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-2xl space-y-3 animate-fade-in">
               <div className="flex items-start gap-2">
                 <span className="text-amber-400 text-base shrink-0">💳</span>
                 <div className="text-xs text-amber-200/95 font-semibold space-y-1">
                   {orderType === 'takeaway' ? (
                     <p className="font-black text-red-400">
-                      ⚠️ تنبيه: لضمان تحضير طلب الاستلام من الفرع بالمطبخ، يلزم تحويل المبلغ كاملاً وإرفاق إثبات/رقم العملية.
+                      ⚠️ تنبيه: لضمان تحضير طلب الاستلام من الفرع بالمطبخ، يلزم تحويل المبلغ كاملاً وإرفاق صورة إثبات التحويل أو رقم العملية.
                     </p>
                   ) : (
-                    <p className="font-bold">يرجى تحويل المبلغ كاملاً وإرفاق رقم عملية التحويل لتأكيد طلبك.</p>
+                    <p className="font-bold">يرجى تحويل المبلغ كاملاً وإرفاق صورة إثبات التحويل أو رقم العملية لتأكيد طلبك.</p>
                   )}
                   <p>• حساب فودافون كاش / إنستا باي: <strong className="text-white font-mono text-sm underline dir-ltr">01000000000</strong></p>
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[10px] font-black text-slate-300 uppercase tracking-wider mb-1">
-                  رقم العملية / إثبات تحويل المبلغ <span className="text-amber-400">*</span>
+              {/* قسم رفع صورة إثبات التحويل المرفوع لـ Supabase receipts */}
+              <div className="space-y-2 pt-2 border-t border-amber-500/20">
+                <label className="block text-[11px] font-black text-slate-300 uppercase tracking-wider">
+                  📷 إرفاق صورة إثبات/إشعار التحويل (مستحسن) <span className="text-amber-400">*</span>
                 </label>
-                <input
-                  type="text"
-                  value={paymentReceipt}
-                  onChange={(e) => setPaymentReceipt(e.target.value)}
-                  placeholder="أدخل رقم عملية التحويل أو كود التأكيد..."
-                  required={orderType === 'takeaway' || paymentMethod !== 'cash'}
-                  disabled={isSubmitting}
-                  className="w-full px-3 py-2 bg-dark-950/80 border border-amber-500/30 rounded-xl text-xs font-bold text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
-                />
+
+                <div className="relative">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleReceiptFileChange}
+                    disabled={isSubmitting || isUploadingReceipt}
+                    className="hidden"
+                    id="receipt-file-input"
+                  />
+                  <label
+                    htmlFor="receipt-file-input"
+                    className={`w-full py-3 px-4 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1.5 cursor-pointer transition-all ${
+                      isUploadingReceipt
+                        ? 'border-amber-500/50 bg-amber-500/10 text-amber-300'
+                        : receiptPreview
+                        ? 'border-emerald-500/50 bg-emerald-500/10 text-emerald-300'
+                        : 'border-white/20 bg-dark-950/60 hover:border-amber-500/50 text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    {isUploadingReceipt ? (
+                      <div className="flex items-center gap-2 font-bold text-xs">
+                        <span className="w-4 h-4 border-2 border-amber-400/30 border-t-amber-400 rounded-full animate-spin" />
+                        <span>جاري ضغط الصورة ورفعها لـ Supabase...</span>
+                      </div>
+                    ) : receiptPreview ? (
+                      <div className="flex items-center gap-3 w-full">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={receiptPreview}
+                          alt="إثبات التحويل"
+                          className="w-12 h-12 object-cover rounded-lg border border-emerald-500/30"
+                        />
+                        <div className="flex-1 text-right">
+                          <p className="text-emerald-400 font-black text-xs">✓ تم رفع إثبات التحويل بنجاح</p>
+                          <p className="text-[10px] text-slate-400">انقر لتغيير الصورة المستعادة</p>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="text-lg">📤</span>
+                        <span className="font-bold text-xs">اضغط هنا لاختيار صورة إشعار التحويل من جهازك</span>
+                        <span className="text-[9px] text-slate-400">يتم ضغط حجم الصورة تلقائياً لسرعة الرفع</span>
+                      </>
+                    )}
+                  </label>
+                </div>
+
+                {uploadError && (
+                  <p className="text-red-400 text-[10px] font-bold animate-pulse">{uploadError}</p>
+                )}
+
+                {/* حقل إدخال رقم العملية كبديل أو كود نصي */}
+                <div className="mt-2">
+                  <label className="block text-[10px] font-bold text-slate-400 mb-1">
+                    أو ادخل رقم العملية / كود التحويل نصياً:
+                  </label>
+                  <input
+                    type="text"
+                    value={paymentReceipt}
+                    onChange={(e) => setPaymentReceipt(e.target.value)}
+                    placeholder="أدخل رقم عملية التحويل أو رابط الإثبات..."
+                    required={orderType === 'takeaway' || paymentMethod !== 'cash'}
+                    disabled={isSubmitting || isUploadingReceipt}
+                    className="w-full px-3 py-2 bg-dark-950/80 border border-white/10 rounded-xl text-xs font-bold text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
               </div>
             </div>
           )}

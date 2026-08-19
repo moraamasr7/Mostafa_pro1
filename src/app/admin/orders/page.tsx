@@ -707,9 +707,31 @@ export default function AdminOrdersPage() {
                         💳 الدفع: {order.payment_method === 'instapay' ? 'إنستا باي ⚡' : order.payment_method === 'wallet' ? 'فودافون كاش 📱' : 'نقدي كاش 💵'}
                       </span>
                       {order.payment_receipt_url && (
-                        <span className="bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-lg font-bold">
-                          📄 إثبات/رقم التحويل: {order.payment_receipt_url}
-                        </span>
+                        <div className="w-full bg-blue-50/80 border border-blue-200 p-2 rounded-xl text-blue-900 font-semibold space-y-1">
+                          <div className="flex justify-between items-center text-[11px]">
+                            <span>📄 <strong>إثبات/رقم التحويل:</strong></span>
+                            <a
+                              href={order.payment_receipt_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline font-bold text-[10px]"
+                            >
+                              فتح الرابط الكامل ↗
+                            </a>
+                          </div>
+                          {order.payment_receipt_url.startsWith('http') ? (
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img
+                              src={order.payment_receipt_url}
+                              alt="صورة إثبات التحويل"
+                              className="w-full max-h-36 object-contain rounded-lg border border-blue-300 bg-white"
+                            />
+                          ) : (
+                            <p className="text-xs font-mono bg-white p-1.5 rounded border border-blue-200 dir-ltr text-left">
+                              {order.payment_receipt_url}
+                            </p>
+                          )}
+                        </div>
                       )}
                     </div>
 
