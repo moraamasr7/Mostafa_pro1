@@ -151,8 +151,7 @@ export async function POST(request: NextRequest) {
 
     if (rpcError) {
       console.error('خطأ في استدعاء RPC create_order_secure:', rpcError)
-      // إذا كان الخطأ استثناء مستخدم معرف من داخل قاعدة البيانات (مثل عدم توفر الصنف أو نقص العنوان)
-      if (rpcError.code === 'P0001' || (rpcError.message && !rpcError.message.toLowerCase().includes('function') && !rpcError.message.toLowerCase().includes('could not find'))) {
+      if (rpcError.message && !rpcError.message.toLowerCase().includes('could not find')) {
         return NextResponse.json(
           { error: rpcError.message },
           { status: 400 }
@@ -258,8 +257,8 @@ export async function POST(request: NextRequest) {
     if (orderError || !order) {
       console.error('خطأ أثناء حفظ الطلب:', orderError)
       return NextResponse.json(
-        { error: 'حصلت مشكلة أثناء تسجيل الطلب، يرجى المحاولة لاحقاً.' },
-        { status: 500 }
+        { error: orderError?.message || 'حصلت مشكلة أثناء تسجيل الطلب، يرجى المحاولة لاحقاً.' },
+        { status: 400 }
       )
     }
 
