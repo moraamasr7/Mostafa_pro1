@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { CreateOrderPayload, OrderItemInput } from '@/types/menu'
+import { sendNewOrderNotification } from '@/lib/telegram'
 
 export const dynamic = 'force-dynamic'
 
@@ -162,6 +163,20 @@ export async function POST(request: NextRequest) {
 
     if (!rpcError && rpcData && rpcData.length > 0) {
       const createdOrder = rpcData[0]
+
+      // إرسال إشعار فوري للتليجرام في الخلفية
+      sendNewOrderNotification({
+        order_number: createdOrder.order_number,
+        customer_name: cleanName,
+        customer_phone: cleanPhone,
+        order_type: cleanOrderType,
+        delivery_address: cleanOrderType === 'delivery' ? cleanDeliveryAddress : null,
+        payment_method: cleanPaymentMethod,
+        payment_receipt_url: cleanPaymentReceipt || null,
+        total_amount: Number(createdOrder.total_amount),
+        notes: cleanNotes || null,
+      }).catch((e) => console.error('Telegram notification trigger error:', e))
+
       return NextResponse.json(
         {
           order_id: createdOrder.order_id,
