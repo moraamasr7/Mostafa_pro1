@@ -707,20 +707,9 @@ export default function AdminOrdersPage() {
                         💳 الدفع: {order.payment_method === 'instapay' ? 'إنستا باي ⚡' : order.payment_method === 'wallet' ? 'فودافون كاش 📱' : 'نقدي كاش 💵'}
                       </span>
                       {order.payment_receipt_url && (
-                        order.payment_receipt_url.startsWith('http') ? (
-                          <a
-                            href={order.payment_receipt_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="bg-blue-600 text-white hover:bg-blue-700 px-2 py-0.5 rounded-lg font-bold underline transition-colors"
-                          >
-                            🖼️ معاينة صورة التحويل
-                          </a>
-                        ) : (
-                          <span className="bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-lg font-bold">
-                            📄 رقم العملية: {order.payment_receipt_url}
-                          </span>
-                        )
+                        <span className="bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-lg font-bold">
+                          📄 إثبات/رقم التحويل: {order.payment_receipt_url}
+                        </span>
                       )}
                     </div>
 

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { CreateOrderPayload, OrderItemInput } from '@/types/menu'
-import { sendNewOrderNotification } from '@/lib/telegram'
 
 export const dynamic = 'force-dynamic'
 
@@ -25,7 +24,7 @@ export async function POST(request: NextRequest) {
 
     // === 1. التحقق من Turnstile حماية من البوتات ===
     const turnstileSecret = process.env.TURNSTILE_SECRET_KEY
-    if (turnstileSecret && !turnstileSecret.startsWith('1x00000000')) {
+    if (turnstileSecret) {
       const turnstileRes = await fetch(
         'https://challenges.cloudflare.com/turnstile/v0/siteverify',
         {
@@ -40,9 +39,8 @@ export async function POST(request: NextRequest) {
 
       const turnstileData = await turnstileRes.json()
       if (!turnstileData.success) {
-        console.error('فشل التحقق الأمني من Cloudflare Turnstile:', turnstileData['error-codes'])
         return NextResponse.json(
-          { error: 'فشل التحقق الأمني (Turnstile). يرجى إعادة تظليل مربع الكابتشا والمحاولة مرة أخرى.' },
+          { error: 'فشل التحقق الأمني (Turnstile). يرجى المحاولة مرة أخرى.' },
           { status: 400 }
         )
       }
@@ -164,20 +162,6 @@ export async function POST(request: NextRequest) {
 
     if (!rpcError && rpcData && rpcData.length > 0) {
       const createdOrder = rpcData[0]
-
-      // إرسال إشعار فوري للتليجرام في الخلفية
-      sendNewOrderNotification({
-        order_number: createdOrder.order_number,
-        customer_name: cleanName,
-        customer_phone: cleanPhone,
-        order_type: cleanOrderType,
-        delivery_address: cleanOrderType === 'delivery' ? cleanDeliveryAddress : null,
-        payment_method: cleanPaymentMethod,
-        payment_receipt_url: cleanPaymentReceipt || null,
-        total_amount: Number(createdOrder.total_amount),
-        notes: cleanNotes || null,
-      }).catch((e) => console.error('Telegram notification trigger error:', e))
-
       return NextResponse.json(
         {
           order_id: createdOrder.order_id,

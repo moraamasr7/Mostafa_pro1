@@ -38,35 +38,6 @@ export default function CheckoutForm({
     initialOrderType === 'takeaway' ? 'instapay' : 'cash'
   )
   const [paymentReceipt, setPaymentReceipt] = useState('')
-  const [uploadingReceipt, setUploadingReceipt] = useState(false)
-  const [uploadError, setUploadError] = useState('')
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setUploadingReceipt(true)
-    setUploadError('')
-
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-
-      const res = await fetch('/api/upload-receipt', {
-        method: 'POST',
-        body: formData,
-      })
-      const data = await res.json()
-      if (res.ok && data.url) {
-        setPaymentReceipt(data.url)
-      } else {
-        setUploadError(data.error || 'فشل رفع الصورة')
-      }
-    } catch {
-      setUploadError('تعذر الاتصال بالسيرفر لرفع الصورة')
-    } finally {
-      setUploadingReceipt(false)
-    }
-  }
   const [notes, setNotes] = useState('')
   const [turnstileToken, setTurnstileToken] = useState('')
   const [phoneError, setPhoneError] = useState('')
@@ -318,58 +289,19 @@ export default function CheckoutForm({
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-gray-800">
-                  إثبات تحويل المبلغ (صورة التحويل أو رقم العملية) <span className="text-red-500">*</span>
+              <div>
+                <label className="block text-xs font-bold text-gray-800 mb-1">
+                  رقم العملية / إثبات تحويل المبلغ <span className="text-red-500">*</span>
                 </label>
-
-                {/* خيار 1: رفع صورة التحويل مباشرة لسوبابيز */}
-                <div className="flex items-center gap-2">
-                  <label className="flex-1 cursor-pointer bg-white border border-dashed border-amber-400 hover:border-amber-600 rounded-xl p-2.5 text-center transition-colors">
-                    <span className="text-xs font-bold text-amber-900 flex items-center justify-center gap-1.5">
-                      {uploadingReceipt ? (
-                        <>
-                          <span className="w-3.5 h-3.5 border-2 border-amber-600 border-t-transparent rounded-full animate-spin" />
-                          جاري رفع الصورة...
-                        </>
-                      ) : (
-                        <>
-                          <span>📸</span>
-                          <span>{paymentReceipt.startsWith('http') ? 'تم رفع الصورة (تغيير)' : 'رفع صورة التحويل (Screenshot)'}</span>
-                        </>
-                      )}
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleFileUpload}
-                      disabled={isSubmitting || uploadingReceipt}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
-
-                {uploadError && (
-                  <p className="text-red-500 text-[11px] font-semibold">{uploadError}</p>
-                )}
-
-                {/* خيار 2: إدخال رقم العملية يدوياً */}
                 <input
                   type="text"
                   value={paymentReceipt}
                   onChange={(e) => setPaymentReceipt(e.target.value)}
-                  placeholder="أو أدخل رقم عملية التحويل / كود التأكيد..."
+                  placeholder="أدخل رقم عملية التحويل أو كود التأكيد..."
                   required={orderType === 'takeaway' || paymentMethod !== 'cash'}
                   disabled={isSubmitting}
                   className="w-full px-3 py-2 border border-amber-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white text-xs font-semibold"
                 />
-
-                {paymentReceipt.startsWith('http') && (
-                  <div className="bg-emerald-100 border border-emerald-300 rounded-xl p-2 text-[11px] font-bold text-emerald-800 flex items-center justify-between">
-                    <span>✅ تم إرفاق صورة التحويل بنجاح!</span>
-                    <a href={paymentReceipt} target="_blank" rel="noreferrer" className="underline text-emerald-900">معاينة</a>
-                  </div>
-                )}
               </div>
             </div>
           )}
