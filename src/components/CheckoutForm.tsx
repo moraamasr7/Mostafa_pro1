@@ -22,7 +22,7 @@ interface CheckoutFormProps {
   isSubmitting: boolean
 }
 
-// فورم إتمام الطلب — بيانات العميل + نوع الطلب (دليفري/استلام) + طريقة الدفع وإثبات التحويل
+// فورم إتمام الطلب — تصميم Glassmorphic داكن وأنيق مطابق لهوية التطبيق
 export default function CheckoutForm({
   isOpen,
   initialOrderType = 'takeaway',
@@ -44,19 +44,19 @@ export default function CheckoutForm({
 
   if (!isOpen) return null
 
-  // التحقق من رقم الموبايل المصري: 11 رقم يبدأ بـ 01
+  // التحقق من رقم الموبايل المصري
   const validatePhone = (value: string): boolean => {
     const cleaned = value.replace(/\s/g, '')
     if (cleaned.length !== 11) {
-      setPhoneError('رقم الموبايل لازم يكون 11 رقم')
+      setPhoneError('رقم الموبايل يجب أن يتكون من 11 رقماً')
       return false
     }
     if (!cleaned.startsWith('01')) {
-      setPhoneError('رقم الموبايل لازم يبدأ بـ 01')
+      setPhoneError('رقم الموبايل يجب أن يبدأ بـ 01')
       return false
     }
     if (!/^\d+$/.test(cleaned)) {
-      setPhoneError('رقم الموبايل لازم يكون أرقام بس')
+      setPhoneError('يمنع استخدام الحروف أو الرموز في رقم الموبايل')
       return false
     }
     setPhoneError('')
@@ -81,7 +81,7 @@ export default function CheckoutForm({
     }
   }
 
-  // التحقق من اكتمال البيانات حسب نوع الطلب وطريقة الدفع
+  // التحقق من اكتمال البيانات
   const isAddressValid = orderType !== 'delivery' || deliveryAddress.trim().length >= 5
   const isReceiptValid =
     orderType !== 'takeaway' && paymentMethod === 'cash'
@@ -113,45 +113,45 @@ export default function CheckoutForm({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center animate-fade-in">
-      {/* خلفية مظلمة */}
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-fade-in">
+      {/* خلفية مظلمة ضبابية */}
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/75 backdrop-blur-md"
         onClick={!isSubmitting ? onClose : undefined}
       />
 
       {/* محتوى الفورم */}
-      <div className="relative w-full max-w-lg bg-white/95 backdrop-blur-xl rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[90vh] flex flex-col animate-slide-up">
+      <div className="relative w-full max-w-lg bg-dark-900/95 backdrop-blur-2xl border border-white/10 rounded-t-3xl sm:rounded-3xl shadow-2xl max-h-[90vh] flex flex-col animate-slide-up overflow-hidden">
         {/* هيدر */}
-        <div className="flex items-center justify-between p-5 border-b border-gray-100">
+        <div className="flex items-center justify-between p-4 sm:p-5 border-b border-white/[0.08]">
           <div>
-            <h2 className="font-extrabold text-xl text-gray-900">إتمام الطلب</h2>
-            <p className="text-xs text-gray-500 font-medium">حدد تفاصيل الاستلام والدفع</p>
+            <h2 className="font-black text-lg sm:text-xl text-white">إتمام الطلب</h2>
+            <p className="text-xs text-slate-400 font-medium">حدد تفاصيل التسليم والدفع لخدمتك بأسرع وقت</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             disabled={isSubmitting}
-            className="w-9 h-9 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-colors text-lg disabled:opacity-50"
+            className="w-8 h-8 rounded-full bg-dark-800 hover:bg-dark-700 flex items-center justify-center text-slate-300 hover:text-white transition-colors text-sm font-bold border border-white/10 disabled:opacity-50"
           >
             ✕
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-5 space-y-5">
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 sm:space-y-5">
           {/* اختيارات نوع الطلب (تيك اواي / دليفري) */}
           <div>
-            <label className="block text-sm font-bold text-gray-800 mb-2">
-              طريقة استلام الطلب <span className="text-red-500">*</span>
+            <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+              طريقة استلام الطلب <span className="text-amber-500">*</span>
             </label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-2 gap-2.5">
               <button
                 type="button"
                 onClick={() => handleOrderTypeChange('delivery')}
-                className={`py-3 px-4 rounded-2xl font-extrabold text-sm border-2 transition-all flex flex-col items-center gap-1 ${
+                className={`py-3 px-3 rounded-2xl font-black text-xs sm:text-sm border transition-all flex flex-col items-center gap-1 ${
                   orderType === 'delivery'
-                    ? 'border-amber-500 bg-amber-50 text-amber-900 shadow-sm'
-                    : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'
+                    ? 'border-amber-500 bg-amber-500/15 text-amber-400 shadow-md shadow-amber-500/10'
+                    : 'border-white/[0.06] bg-dark-800/50 text-slate-400 hover:bg-dark-800 hover:text-white'
                 }`}
               >
                 <span className="text-xl">🛵</span>
@@ -161,10 +161,10 @@ export default function CheckoutForm({
               <button
                 type="button"
                 onClick={() => handleOrderTypeChange('takeaway')}
-                className={`py-3 px-4 rounded-2xl font-extrabold text-sm border-2 transition-all flex flex-col items-center gap-1 ${
+                className={`py-3 px-3 rounded-2xl font-black text-xs sm:text-sm border transition-all flex flex-col items-center gap-1 ${
                   orderType === 'takeaway'
-                    ? 'border-amber-500 bg-amber-50 text-amber-900 shadow-sm'
-                    : 'border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100'
+                    ? 'border-amber-500 bg-amber-500/15 text-amber-400 shadow-md shadow-amber-500/10'
+                    : 'border-white/[0.06] bg-dark-800/50 text-slate-400 hover:bg-dark-800 hover:text-white'
                 }`}
               >
                 <span className="text-xl">🏪</span>
@@ -173,11 +173,11 @@ export default function CheckoutForm({
             </div>
           </div>
 
-          {/* حقل عنوان التوصيل — يظهر فقط عند اختيار الدليفري */}
+          {/* حقل عنوان التوصيل — يظهر عند الدليفري */}
           {orderType === 'delivery' && (
-            <div className="animate-fade-in-up">
-              <label className="block text-sm font-bold text-gray-700 mb-1.5">
-                عنوان التوصيل التفصيلي <span className="text-red-500">*</span>
+            <div className="animate-fade-in-up space-y-1">
+              <label className="block text-xs font-black text-slate-400 uppercase tracking-wider">
+                عنوان التوصيل التفصيلي <span className="text-amber-500">*</span>
               </label>
               <input
                 type="text"
@@ -186,18 +186,18 @@ export default function CheckoutForm({
                 placeholder="المنطقة، اسم الشارع، رقم العمارة والشقة..."
                 required={orderType === 'delivery'}
                 disabled={isSubmitting}
-                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400 bg-gray-50/50 transition-all text-sm disabled:opacity-60"
+                className="w-full px-4 py-3 bg-dark-950/70 border border-white/[0.08] text-white rounded-xl focus:outline-none focus:border-amber-500/60 transition-all text-xs sm:text-sm placeholder:text-slate-500 disabled:opacity-60"
               />
               {deliveryAddress.length > 0 && deliveryAddress.trim().length < 5 && (
-                <p className="text-red-500 text-xs mt-1 font-medium">العنوان يجب أن يكون 5 حروف على الأقل</p>
+                <p className="text-red-400 text-[10px] font-bold mt-1">العنوان يجب أن لا يقل عن 5 حروف</p>
               )}
             </div>
           )}
 
           {/* طرق الدفع المتاحة */}
           <div>
-            <label className="block text-sm font-bold text-gray-800 mb-2">
-              طريقة الدفع <span className="text-red-500">*</span>
+            <label className="block text-xs font-black text-slate-400 uppercase tracking-wider mb-2">
+              طريقة الدفع <span className="text-amber-500">*</span>
             </label>
 
             {orderType === 'delivery' ? (
@@ -207,8 +207,8 @@ export default function CheckoutForm({
                   onClick={() => setPaymentMethod('cash')}
                   className={`py-2.5 px-2 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 ${
                     paymentMethod === 'cash'
-                      ? 'border-amber-500 bg-amber-500 text-white shadow-sm'
-                      : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'
+                      ? 'border-amber-500 bg-amber-500 text-white shadow-md'
+                      : 'border-white/[0.06] bg-dark-800/50 text-slate-400 hover:bg-dark-800'
                   }`}
                 >
                   <span className="text-base">💵</span>
@@ -220,8 +220,8 @@ export default function CheckoutForm({
                   onClick={() => setPaymentMethod('instapay')}
                   className={`py-2.5 px-2 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 ${
                     paymentMethod === 'instapay'
-                      ? 'border-purple-600 bg-purple-600 text-white shadow-sm'
-                      : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'
+                      ? 'border-purple-500 bg-purple-600 text-white shadow-md'
+                      : 'border-white/[0.06] bg-dark-800/50 text-slate-400 hover:bg-dark-800'
                   }`}
                 >
                   <span className="text-base">⚡</span>
@@ -233,8 +233,8 @@ export default function CheckoutForm({
                   onClick={() => setPaymentMethod('wallet')}
                   className={`py-2.5 px-2 rounded-xl text-xs font-bold border transition-all flex flex-col items-center gap-1 ${
                     paymentMethod === 'wallet'
-                      ? 'border-red-600 bg-red-600 text-white shadow-sm'
-                      : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'
+                      ? 'border-red-500 bg-red-600 text-white shadow-md'
+                      : 'border-white/[0.06] bg-dark-800/50 text-slate-400 hover:bg-dark-800'
                   }`}
                 >
                   <span className="text-base">📱</span>
@@ -248,8 +248,8 @@ export default function CheckoutForm({
                   onClick={() => setPaymentMethod('instapay')}
                   className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${
                     paymentMethod === 'instapay'
-                      ? 'border-purple-600 bg-purple-600 text-white shadow-sm'
-                      : 'border-gray-200 bg-gray-50 text-gray-700'
+                      ? 'border-purple-500 bg-purple-600 text-white shadow-md'
+                      : 'border-white/[0.06] bg-dark-800/50 text-slate-400'
                   }`}
                 >
                   <span className="text-base">⚡</span>
@@ -261,8 +261,8 @@ export default function CheckoutForm({
                   onClick={() => setPaymentMethod('wallet')}
                   className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-2 ${
                     paymentMethod === 'wallet'
-                      ? 'border-red-600 bg-red-600 text-white shadow-sm'
-                      : 'border-gray-200 bg-gray-50 text-gray-700'
+                      ? 'border-red-500 bg-red-600 text-white shadow-md'
+                      : 'border-white/[0.06] bg-dark-800/50 text-slate-400'
                   }`}
                 >
                   <span className="text-base">📱</span>
@@ -272,26 +272,26 @@ export default function CheckoutForm({
             )}
           </div>
 
-          {/* تنبيه تعليمات التحويل وإدخال رقم العملية (ضروري للتيك اواي أو التحويل بالدليفري) */}
+          {/* تعليمات التحويل وإدخال رقم العملية */}
           {(orderType === 'takeaway' || paymentMethod !== 'cash') && (
-            <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl space-y-2 animate-fade-in">
+            <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-2xl space-y-2 animate-fade-in">
               <div className="flex items-start gap-2">
-                <span className="text-amber-600 text-base shrink-0">💳</span>
-                <div className="text-xs text-amber-900 font-semibold space-y-1">
+                <span className="text-amber-400 text-base shrink-0">💳</span>
+                <div className="text-xs text-amber-200/95 font-semibold space-y-1">
                   {orderType === 'takeaway' ? (
-                    <p className="font-extrabold text-red-700">
+                    <p className="font-black text-red-400">
                       ⚠️ تنبيه: لضمان تحضير طلب الاستلام من الفرع بالمطبخ، يلزم تحويل المبلغ كاملاً وإرفاق إثبات/رقم العملية.
                     </p>
                   ) : (
                     <p className="font-bold">يرجى تحويل المبلغ كاملاً وإرفاق رقم عملية التحويل لتأكيد طلبك.</p>
                   )}
-                  <p>• حساب فودافون كاش / إنستا باي: <strong className="text-black font-mono text-sm underline dir-ltr">01000000000</strong></p>
+                  <p>• حساب فودافون كاش / إنستا باي: <strong className="text-white font-mono text-sm underline dir-ltr">01000000000</strong></p>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-gray-800 mb-1">
-                  رقم العملية / إثبات تحويل المبلغ <span className="text-red-500">*</span>
+                <label className="block text-[10px] font-black text-slate-300 uppercase tracking-wider mb-1">
+                  رقم العملية / إثبات تحويل المبلغ <span className="text-amber-400">*</span>
                 </label>
                 <input
                   type="text"
@@ -300,16 +300,16 @@ export default function CheckoutForm({
                   placeholder="أدخل رقم عملية التحويل أو كود التأكيد..."
                   required={orderType === 'takeaway' || paymentMethod !== 'cash'}
                   disabled={isSubmitting}
-                  className="w-full px-3 py-2 border border-amber-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white text-xs font-semibold"
+                  className="w-full px-3 py-2 bg-dark-950/80 border border-amber-500/30 rounded-xl text-xs font-bold text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
                 />
               </div>
             </div>
           )}
 
           {/* حقل الاسم */}
-          <div>
-            <label className="block text-sm font-bold text-gray-700 mb-1.5">
-              الاسم <span className="text-red-500">*</span>
+          <div className="space-y-1">
+            <label className="block text-xs font-black text-slate-400 uppercase tracking-wider">
+              الاسم بالكامل <span className="text-amber-500">*</span>
             </label>
             <input
               type="text"
@@ -318,14 +318,14 @@ export default function CheckoutForm({
               placeholder="اسمك الكريم"
               required
               disabled={isSubmitting}
-              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400 bg-gray-50/50 transition-all text-sm disabled:opacity-60"
+              className="w-full px-4 py-3 bg-dark-950/70 border border-white/[0.08] text-white rounded-xl focus:outline-none focus:border-amber-500/60 transition-all text-xs sm:text-sm placeholder:text-slate-500 disabled:opacity-60"
             />
           </div>
 
           {/* حقل رقم الموبايل */}
-          <div>
-            <label className="block text-sm font-bold text-gray-700 mb-1.5">
-              رقم الموبايل <span className="text-red-500">*</span>
+          <div className="space-y-1">
+            <label className="block text-xs font-black text-slate-400 uppercase tracking-wider">
+              رقم الموبايل <span className="text-amber-500">*</span>
             </label>
             <input
               type="tel"
@@ -335,36 +335,36 @@ export default function CheckoutForm({
               required
               disabled={isSubmitting}
               dir="ltr"
-              className={`w-full px-4 py-3 border rounded-xl focus:outline-none focus:ring-2 bg-gray-50/50 transition-all text-sm text-left disabled:opacity-60 ${
+              className={`w-full px-4 py-3 bg-dark-950/70 border rounded-xl focus:outline-none transition-all text-xs sm:text-sm text-left disabled:opacity-60 ${
                 phoneError
-                  ? 'border-red-300 focus:ring-red-200 focus:border-red-400'
-                  : 'border-gray-200 focus:ring-amber-200 focus:border-amber-400'
+                  ? 'border-red-500/60 focus:border-red-500'
+                  : 'border-white/[0.08] focus:border-amber-500/60'
               }`}
             />
             {phoneError && (
-              <p className="text-red-500 text-xs mt-1.5 font-medium">
+              <p className="text-red-400 text-[10px] font-bold mt-1">
                 {phoneError}
               </p>
             )}
           </div>
 
           {/* ملاحظات اختيارية */}
-          <div>
-            <label className="block text-sm font-bold text-gray-700 mb-1.5">
+          <div className="space-y-1">
+            <label className="block text-xs font-black text-slate-400 uppercase tracking-wider">
               ملاحظات على الطلب
-              <span className="text-gray-400 font-normal mr-1">(اختياري)</span>
+              <span className="text-slate-500 font-normal mr-1">(اختياري)</span>
             </label>
             <textarea
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="أي طلبات خاصة..."
+              placeholder="أي طلبات خاصة بالتحضير أو الاستلام..."
               rows={2}
               disabled={isSubmitting}
-              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-200 focus:border-amber-400 bg-gray-50/50 transition-all text-sm resize-none disabled:opacity-60"
+              className="w-full px-4 py-3 bg-dark-950/70 border border-white/[0.08] text-white rounded-xl focus:outline-none focus:border-amber-500/60 transition-all text-xs sm:text-sm resize-none placeholder:text-slate-500 disabled:opacity-60"
             />
           </div>
 
-          {/* تحقق Cloudflare Turnstile — حماية من الروبوتات */}
+          {/* تحقق Cloudflare Turnstile */}
           <div className="flex justify-center">
             <Turnstile
               siteKey={process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY!}
@@ -372,7 +372,7 @@ export default function CheckoutForm({
               onError={() => setTurnstileToken('')}
               onExpire={() => setTurnstileToken('')}
               options={{
-                theme: 'light',
+                theme: 'dark',
                 language: 'ar',
               }}
             />
@@ -382,7 +382,7 @@ export default function CheckoutForm({
           <button
             type="submit"
             disabled={!isFormValid || isSubmitting}
-            className="w-full bg-gradient-to-l from-amber-600 to-amber-500 hover:from-amber-700 hover:to-amber-600 disabled:from-gray-300 disabled:to-gray-300 disabled:shadow-none text-white font-bold py-3.5 rounded-xl text-base transition-all shadow-md shadow-amber-200/50 active:scale-[0.98] disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            className="w-full bg-gradient-to-l from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 disabled:from-dark-800 disabled:to-dark-800 disabled:text-slate-600 disabled:shadow-none text-white font-extrabold py-3.5 rounded-2xl text-base transition-all shadow-lg shadow-amber-900/30 active:scale-[0.98] disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
             {isSubmitting ? (
               <>
@@ -398,3 +398,4 @@ export default function CheckoutForm({
     </div>
   )
 }
+
