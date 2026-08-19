@@ -127,6 +127,17 @@ export async function POST(request: NextRequest) {
       p_delivery_address: cleanOrderType === 'delivery' ? cleanDeliveryAddress : null,
     })
 
+    if (rpcError) {
+      console.error('خطأ في استدعاء RPC create_order_secure:', rpcError)
+      // إذا كان الخطأ استثناء مستخدم معرف من داخل قاعدة البيانات (مثل عدم توفر الصنف أو نقص العنوان)
+      if (rpcError.code === 'P0001' || (rpcError.message && !rpcError.message.toLowerCase().includes('function') && !rpcError.message.toLowerCase().includes('could not find'))) {
+        return NextResponse.json(
+          { error: rpcError.message },
+          { status: 400 }
+        )
+      }
+    }
+
     if (!rpcError && rpcData && rpcData.length > 0) {
       const createdOrder = rpcData[0]
       return NextResponse.json(

@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- إكمال الحقول في حالة وجود الجدول مسبقاً من نسخة سابقة
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_token UUID DEFAULT gen_random_uuid() NOT NULL;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) DEFAULT 'takeaway';
+
 -- 5) جدول عناصر الطلب
 CREATE TABLE IF NOT EXISTS order_items (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -855,18 +860,25 @@ CREATE POLICY "Staff select delivery_outcomes" ON delivery_outcomes FOR SELECT U
 
 
 -- ==============================================================================
--- الجزء التاسع: تفعيل Realtime
+-- الجزء التاسع: تفعيل Realtime آمن ومحمي من التكرار
 -- ==============================================================================
-ALTER PUBLICATION supabase_realtime ADD TABLE orders;
-ALTER PUBLICATION supabase_realtime ADD TABLE order_items;
-ALTER PUBLICATION supabase_realtime ADD TABLE drivers;
-ALTER PUBLICATION supabase_realtime ADD TABLE driver_shifts;
-ALTER PUBLICATION supabase_realtime ADD TABLE delivery_trips;
-ALTER PUBLICATION supabase_realtime ADD TABLE order_driver_assignments;
-ALTER PUBLICATION supabase_realtime ADD TABLE delivery_outcomes;
-ALTER PUBLICATION supabase_realtime ADD TABLE restaurant_operating_hours;
-ALTER PUBLICATION supabase_realtime ADD TABLE restaurant_special_closures;
-ALTER PUBLICATION supabase_realtime ADD TABLE restaurant_schedule_overrides;
+DO $$
+DECLARE
+    tbl text;
+    tbls text[] := ARRAY[
+        'orders', 'order_items', 'drivers', 'driver_shifts',
+        'delivery_trips', 'order_driver_assignments', 'delivery_outcomes',
+        'restaurant_operating_hours', 'restaurant_special_closures', 'restaurant_schedule_overrides'
+    ];
+BEGIN
+    FOREACH tbl IN ARRAY tbls LOOP
+        BEGIN
+            EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I', tbl);
+        EXCEPTION WHEN OTHERS THEN
+            NULL;
+        END;
+    END LOOP;
+END $$;
 
 
 -- ==============================================================================
@@ -889,6 +901,10 @@ DECLARE
     item_id UUID;
     d INT;
 BEGIN
+    -- التوقف إذا كانت البيانات مضافة مسبقاً لمنع التكرار والأخطاء
+    IF EXISTS (SELECT 1 FROM categories LIMIT 1) THEN
+        RETURN;
+    END IF;
     INSERT INTO categories (name, display_order) VALUES ('الصواني', 1) RETURNING id INTO cat_sawani;
     INSERT INTO categories (name, display_order) VALUES ('الحواوشي', 2) RETURNING id INTO cat_hawawshi;
     INSERT INTO categories (name, display_order) VALUES ('ركن الأرز', 3) RETURNING id INTO cat_rice;
