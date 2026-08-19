@@ -10,7 +10,17 @@ const recentOrdersMap = new Map<string, number>()
 export async function POST(request: NextRequest) {
   try {
     const body: CreateOrderPayload = await request.json()
-    const { customer_name, customer_phone, notes, order_type, delivery_address, items, turnstile_token } = body
+    const {
+      customer_name,
+      customer_phone,
+      notes,
+      order_type,
+      delivery_address,
+      payment_method,
+      payment_receipt_url,
+      items,
+      turnstile_token,
+    } = body
 
     // === 1. التحقق من Turnstile حماية من البوتات ===
     const turnstileSecret = process.env.TURNSTILE_SECRET_KEY
@@ -65,6 +75,16 @@ export async function POST(request: NextRequest) {
     if (cleanOrderType === 'delivery' && (!cleanDeliveryAddress || cleanDeliveryAddress.length < 5)) {
       return NextResponse.json(
         { error: 'عنوان التوصيل مطلوب وبحد أدنى 5 حروف عند طلب الدليفري' },
+        { status: 400 }
+      )
+    }
+
+    const cleanPaymentMethod = payment_method || (cleanOrderType === 'takeaway' ? 'instapay' : 'cash')
+    const cleanPaymentReceipt = payment_receipt_url?.trim() || ''
+
+    if (cleanOrderType === 'takeaway' && cleanPaymentReceipt.length < 3) {
+      return NextResponse.json(
+        { error: 'يلزم كتابة رقم العملية أو إرفاق إثبات تحويل المبلغ كاملاً لتأكيد تحضير طلب الاستلام من الفرع' },
         { status: 400 }
       )
     }
@@ -125,6 +145,8 @@ export async function POST(request: NextRequest) {
       p_items: sanitizedItemsJson,
       p_order_type: cleanOrderType,
       p_delivery_address: cleanOrderType === 'delivery' ? cleanDeliveryAddress : null,
+      p_payment_method: cleanPaymentMethod,
+      p_payment_receipt_url: cleanPaymentReceipt || null,
     })
 
     if (rpcError) {
@@ -225,6 +247,8 @@ export async function POST(request: NextRequest) {
         customer_phone: cleanPhone,
         order_type: cleanOrderType,
         delivery_address: cleanOrderType === 'delivery' ? cleanDeliveryAddress : null,
+        payment_method: cleanPaymentMethod,
+        payment_receipt_url: cleanPaymentReceipt || null,
         status: 'pending',
         notes: cleanNotes || null,
       })

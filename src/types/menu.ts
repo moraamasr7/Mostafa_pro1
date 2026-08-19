@@ -29,12 +29,16 @@ export interface OrderItemInput {
   item_notes?: string;
 }
 
+export type PaymentMethod = 'cash' | 'instapay' | 'wallet'
+
 export interface CreateOrderPayload {
   customer_name: string;
   customer_phone: string;
   notes?: string;
   order_type?: OrderType;
   delivery_address?: string;
+  payment_method?: PaymentMethod;
+  payment_receipt_url?: string;
   items: OrderItemInput[];
   turnstile_token: string;
 }

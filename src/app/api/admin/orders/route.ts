@@ -29,6 +29,8 @@ export async function GET(request: NextRequest) {
         customer_phone,
         delivery_address,
         order_type,
+        payment_method,
+        payment_receipt_url,
         status,
         total_amount,
         notes,

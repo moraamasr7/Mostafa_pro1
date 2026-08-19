@@ -34,6 +34,8 @@ interface Order {
   customer_phone: string
   delivery_address?: string
   order_type: 'takeaway' | 'delivery' | 'dine_in'
+  payment_method?: string
+  payment_receipt_url?: string
   status: OrderStatus
   total_amount: number
   notes?: string
@@ -698,6 +700,18 @@ export default function AdminOrdersPage() {
                         📍 <strong>العنوان:</strong> {order.delivery_address}
                       </p>
                     )}
+
+                    {/* تفاصيل طريقة الدفع وإثبات التحويل */}
+                    <div className="flex flex-wrap gap-1.5 mt-1 text-[11px]">
+                      <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-lg font-bold">
+                        💳 الدفع: {order.payment_method === 'instapay' ? 'إنستا باي ⚡' : order.payment_method === 'wallet' ? 'فودافون كاش 📱' : 'نقدي كاش 💵'}
+                      </span>
+                      {order.payment_receipt_url && (
+                        <span className="bg-blue-50 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-lg font-bold">
+                          📄 إثبات/رقم التحويل: {order.payment_receipt_url}
+                        </span>
+                      )}
+                    </div>
 
                     {/* بيانات الطيار المعين */}
                     {order.assigned_driver && (

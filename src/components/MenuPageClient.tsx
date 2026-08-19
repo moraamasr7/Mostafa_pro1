@@ -1,8 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { GroupedCategory, CartLine } from '@/types/menu'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { GroupedCategory, CartLine, PaymentMethod } from '@/types/menu'
+import { OrderType } from '@/types/orders'
 import MenuItemCard from '@/components/MenuItemCard'
 import CartBar from '@/components/CartBar'
 import CartModal from '@/components/CartModal'
@@ -15,6 +16,10 @@ interface MenuPageClientProps {
 // الصفحة الرئيسية (كلاينت) — إدارة السلة + عرض المنيو + إتمام الطلب
 export default function MenuPageClient({ categories }: MenuPageClientProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const urlType = searchParams.get('type')
+  const initialOrderType: OrderType = urlType === 'delivery' ? 'delivery' : 'takeaway'
+
   const [cart, setCart] = useState<CartLine[]>([])
   const [isCartOpen, setIsCartOpen] = useState(false)
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false)
@@ -64,11 +69,15 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
     setIsCheckoutOpen(true)
   }
 
-  // إرسال الطلب للـ API — نرسل فقط المفتاح والكمية والملاحظات (بدون إرسال الأسعار)
+  // إرسال الطلب للـ API — نرسل بيانات الطلب ونوع التسليم وطريقة الدفع
   const handleSubmitOrder = async (data: {
     customer_name: string
     customer_phone: string
     notes: string
+    order_type: OrderType
+    delivery_address?: string
+    payment_method: PaymentMethod
+    payment_receipt_url?: string
     turnstile_token: string
   }) => {
     setIsSubmitting(true)
@@ -95,7 +104,6 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
       if (!res.ok) {
         setSubmitError(result.error || 'حصلت مشكلة أثناء تسجيل الطلب. حاول مرة أخرى.')
         setIsSubmitting(false)
-        // الاحتفاظ بالسلة كما هي لإتاحة إعادة المحاولة للعميل
         return
       }
 
@@ -181,6 +189,7 @@ export default function MenuPageClient({ categories }: MenuPageClientProps) {
       {/* فورم إتمام الطلب */}
       <CheckoutForm
         isOpen={isCheckoutOpen}
+        initialOrderType={initialOrderType}
         onClose={() => {
           setIsCheckoutOpen(false)
           setSubmitError('')

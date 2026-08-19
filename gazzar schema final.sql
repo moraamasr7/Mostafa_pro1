@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS orders (
     delivery_address TEXT,
     order_type VARCHAR(20) NOT NULL DEFAULT 'takeaway'
         CHECK (order_type IN ('delivery', 'takeaway', 'dine_in')),
+    payment_method VARCHAR(30) DEFAULT 'cash',
+    payment_receipt_url TEXT,
     status VARCHAR(20) NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery', 'delivered', 'completed', 'cancelled', 'failed')),
     total_amount DECIMAL(10, 2) DEFAULT 0.00 CHECK (total_amount >= 0),
@@ -57,6 +59,8 @@ CREATE TABLE IF NOT EXISTS orders (
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_token UUID DEFAULT gen_random_uuid() NOT NULL;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) DEFAULT 'takeaway';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(30) DEFAULT 'cash';
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_receipt_url TEXT;
 
 -- 5) جدول عناصر الطلب
 CREATE TABLE IF NOT EXISTS order_items (
@@ -266,7 +270,9 @@ CREATE OR REPLACE FUNCTION create_order_secure(
     p_notes TEXT,
     p_items JSONB,
     p_order_type VARCHAR DEFAULT 'takeaway',
-    p_delivery_address TEXT DEFAULT NULL
+    p_delivery_address TEXT DEFAULT NULL,
+    p_payment_method VARCHAR DEFAULT 'cash',
+    p_payment_receipt_url TEXT DEFAULT NULL
 )
 RETURNS TABLE (
     order_id UUID,
@@ -288,6 +294,7 @@ DECLARE
     v_item_avail BOOLEAN;
     v_cat_active BOOLEAN;
     v_valid_order_type VARCHAR;
+    v_valid_payment_method VARCHAR;
 BEGIN
     IF p_customer_name IS NULL OR length(trim(p_customer_name)) = 0 THEN
         RAISE EXCEPTION 'اسم العميل مطلوب';
@@ -302,21 +309,37 @@ BEGIN
         RAISE EXCEPTION 'نوع الطلب غير صحيح';
     END IF;
 
+    v_valid_payment_method := COALESCE(NULLIF(trim(p_payment_method), ''), 'cash');
+
     IF v_valid_order_type = 'delivery' AND (p_delivery_address IS NULL OR length(trim(p_delivery_address)) < 5) THEN
         RAISE EXCEPTION 'عنوان التوصيل مطلوب بحد أدنى 5 حروف عند اختيار الدليفري';
+    END IF;
+
+    IF v_valid_order_type = 'takeaway' AND (p_payment_receipt_url IS NULL OR length(trim(p_payment_receipt_url)) < 3) THEN
+        RAISE EXCEPTION 'يلزم كتابة رقم العملية أو إرفاق إثبات تحويل المبلغ كاملاً لتأكيد تحضير طلب الاستلام من الفرع';
     END IF;
 
     IF p_items IS NULL OR jsonb_array_length(p_items) = 0 THEN
         RAISE EXCEPTION 'السلة فارغة';
     END IF;
 
-    INSERT INTO orders (customer_name, customer_phone, notes, order_type, delivery_address, status)
-    VALUES (
+    INSERT INTO orders (
+        customer_name,
+        customer_phone,
+        notes,
+        order_type,
+        delivery_address,
+        payment_method,
+        payment_receipt_url,
+        status
+    ) VALUES (
         trim(p_customer_name),
         trim(p_customer_phone),
         NULLIF(trim(p_notes), ''),
         v_valid_order_type,
         NULLIF(trim(p_delivery_address), ''),
+        v_valid_payment_method,
+        NULLIF(trim(p_payment_receipt_url), ''),
         'pending'
     )
     RETURNING id, orders.order_number, orders.tracking_token INTO v_order_id, v_order_number, v_tracking_token;

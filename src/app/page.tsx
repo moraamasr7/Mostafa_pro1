@@ -1,3 +1,4 @@
+import { Suspense } from 'react'
 import { getMenu } from '@/lib/queries'
 import { MenuVariantRow, GroupedCategory } from '@/types/menu'
 import MenuPageClient from '@/components/MenuPageClient'
@@ -52,5 +53,9 @@ export default async function MenuPage() {
   const rows = await getMenu()
   const categories = groupMenu(rows)
 
-  return <MenuPageClient categories={categories} />
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-amber-50 flex items-center justify-center p-4 text-amber-900 font-bold">جاري تحميل المنيو...</div>}>
+      <MenuPageClient categories={categories} />
+    </Suspense>
+  )
 }
