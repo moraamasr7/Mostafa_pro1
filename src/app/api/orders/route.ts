@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
 
     // === 1. التحقق من Turnstile حماية من البوتات ===
     const turnstileSecret = process.env.TURNSTILE_SECRET_KEY
-    if (turnstileSecret) {
+    if (turnstileSecret && !turnstileSecret.startsWith('1x00000000')) {
       const turnstileRes = await fetch(
         'https://challenges.cloudflare.com/turnstile/v0/siteverify',
         {
@@ -40,8 +40,9 @@ export async function POST(request: NextRequest) {
 
       const turnstileData = await turnstileRes.json()
       if (!turnstileData.success) {
+        console.error('فشل التحقق الأمني من Cloudflare Turnstile:', turnstileData['error-codes'])
         return NextResponse.json(
-          { error: 'فشل التحقق الأمني (Turnstile). يرجى المحاولة مرة أخرى.' },
+          { error: 'فشل التحقق الأمني (Turnstile). يرجى إعادة تظليل مربع الكابتشا والمحاولة مرة أخرى.' },
           { status: 400 }
         )
       }
