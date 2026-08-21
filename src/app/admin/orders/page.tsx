@@ -187,6 +187,19 @@ export default function AdminOrdersPage() {
         return
       }
 
+      const statusLabels: Record<OrderStatus, string> = {
+        pending: 'في انتظار التأكيد',
+        processing: 'جاري التحضير',
+        ready: 'جاهز بالمطبخ / بالفرع',
+        assigned: 'تم تعيين الطيار',
+        picked_up: 'تم استلام الطيار',
+        out_for_delivery: 'في الطريق للعميل',
+        delivered: 'تم التوصيل للعميل',
+        completed: 'تم الاستلام بالفرع',
+        cancelled: 'تم الإلغاء',
+      }
+
+      setActionSuccess(`تم تحديث حالة الطلب بنجاح إلى (${statusLabels[newStatus] || newStatus})`)
       fetchOrdersAndDrivers(activeTab)
     } catch {
       setActionError('حدث خطأ في الشبكة، يرجى المحاولة لاحقاً')
