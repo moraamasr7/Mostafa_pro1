@@ -419,6 +419,28 @@ ALTER TABLE restaurant_operating_hours ENABLE ROW LEVEL SECURITY;
 ALTER TABLE restaurant_special_closures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE restaurant_schedule_overrides ENABLE ROW LEVEL SECURITY;
 
+-- Drop existing policies if any to prevent duplicate policy errors
+DROP POLICY IF EXISTS "Public read active categories" ON categories;
+DROP POLICY IF EXISTS "Public read active menu_items" ON menu_items;
+DROP POLICY IF EXISTS "Public read active item_variants" ON item_variants;
+DROP POLICY IF EXISTS "Public read operating hours" ON restaurant_operating_hours;
+DROP POLICY IF EXISTS "Public read special closures" ON restaurant_special_closures;
+DROP POLICY IF EXISTS "Public read schedule overrides" ON restaurant_schedule_overrides;
+DROP POLICY IF EXISTS "Public insert orders" ON orders;
+DROP POLICY IF EXISTS "Public insert order_items" ON order_items;
+DROP POLICY IF EXISTS "Public select single order" ON orders;
+DROP POLICY IF EXISTS "Public select single order_items" ON order_items;
+DROP POLICY IF EXISTS "Public select drivers" ON drivers;
+DROP POLICY IF EXISTS "Public select driver_shifts" ON driver_shifts;
+DROP POLICY IF EXISTS "Public select delivery_trips" ON delivery_trips;
+DROP POLICY IF EXISTS "Public select order_driver_assignments" ON order_driver_assignments;
+DROP POLICY IF EXISTS "Public select delivery_outcomes" ON delivery_outcomes;
+DROP POLICY IF EXISTS "Staff select drivers" ON drivers;
+DROP POLICY IF EXISTS "Staff select driver_shifts" ON driver_shifts;
+DROP POLICY IF EXISTS "Staff select delivery_trips" ON delivery_trips;
+DROP POLICY IF EXISTS "Staff select order_driver_assignments" ON order_driver_assignments;
+DROP POLICY IF EXISTS "Staff select delivery_outcomes" ON delivery_outcomes;
+
 -- Public read policies for menu & operating hours
 CREATE POLICY "Public read active categories" ON categories FOR SELECT USING (is_active = true);
 CREATE POLICY "Public read active menu_items" ON menu_items FOR SELECT USING (is_available = true);
