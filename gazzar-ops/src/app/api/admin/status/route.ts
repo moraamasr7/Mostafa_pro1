@@ -98,7 +98,7 @@ export async function POST(request: NextRequest) {
     if (updateErr) {
       console.error('خطأ أثناء تحديث حالة الطلب:', updateErr)
       return NextResponse.json(
-        { error: 'فشل تحديث حالة الطلب' },
+        { error: updateErr.message || 'فشل تحديث حالة الطلب في الداتابيز' },
         { status: 500 }
       )
     }
@@ -107,10 +107,10 @@ export async function POST(request: NextRequest) {
       { success: true, status: new_status, message: 'تم تحديث الحالة بنجاح' },
       { status: 200 }
     )
-  } catch (err) {
+  } catch (err: any) {
     console.error('خطأ غير متوقع في API تحديث الحالة:', err)
     return NextResponse.json(
-      { error: 'حدث خطأ غير متوقع' },
+      { error: err?.message || 'حدث خطأ غير متوقع' },
       { status: 500 }
     )
   }
