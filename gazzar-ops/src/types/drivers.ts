@@ -47,6 +47,7 @@ export interface Driver {
   updated_at: string
   active_shift_id?: string
   current_order_id?: string
+  assigned_orders_count?: number
 }
 
 export interface DriverShift {

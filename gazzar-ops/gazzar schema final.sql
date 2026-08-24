@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS delivery_outcomes (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- تحديث جدول delivery_outcomes للتأكد من وجود الأعمدة الموحدة
+-- تحديث جدول delivery_outcomes للتأكد من وجود الأعمدة الموحدة والقيد الفريد
 ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS driver_id UUID;
 ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS trip_id UUID;
 ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS assignment_id UUID;
@@ -163,6 +163,10 @@ ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS expected_amount DECIMAL(10, 2) DEFAULT 0.00;
 ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS collected_amount DECIMAL(10, 2) DEFAULT 0.00;
 ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS recorded_by VARCHAR(100) DEFAULT 'staff';
+
+-- ضمان وجود القيد الفريد ON CONFLICT (order_id)
+ALTER TABLE delivery_outcomes DROP CONSTRAINT IF EXISTS delivery_outcomes_order_id_key;
+ALTER TABLE delivery_outcomes ADD CONSTRAINT delivery_outcomes_order_id_key UNIQUE (order_id);
 
 -- 11) جدول مواعيد عمل المطعم
 CREATE TABLE IF NOT EXISTS restaurant_operating_hours (
@@ -479,9 +483,9 @@ BEGIN
         v_expected_total := v_expected_total + COALESCE(v_order_rec.total_amount, 0) + COALESCE(v_order_rec.delivery_fee, 0);
     END LOOP;
 
-    -- تحديث إجمالي المبلغ المتوقع للرحلة وتحديث حالة الطيار تلقائياً إلى busy
+    -- تحديث إجمالي المبلغ المتوقع للرحلة وتثبيت حالة الطيار كـ available أثناء التواجد بالفرع لإتاحة حمل حتى 5 طلبات
     UPDATE delivery_trips SET expected_amount = COALESCE(expected_amount, 0) + v_expected_total WHERE id = v_trip_id;
-    UPDATE drivers SET status = 'busy', updated_at = now() WHERE id = p_driver_id;
+    UPDATE drivers SET status = 'available', updated_at = now() WHERE id = p_driver_id;
 
     RETURN QUERY SELECT true, 'تم إسناد الطلبات للطيار وإنشاء خط السير بنجاح'::TEXT, v_trip_id, v_trip_number;
 END;
@@ -762,6 +766,18 @@ BEGIN
     END IF;
 
     UPDATE orders SET status = p_new_status WHERE id = p_order_id;
+    UPDATE order_driver_assignments SET status = p_new_status WHERE order_id = p_order_id;
+
+    -- عند تحول حالة الطلب إلى out_for_delivery ("خرج مع الطيار للعميل") تتحول رحلة التوصيل وحالة الطيار إلى busy
+    IF p_new_status = 'out_for_delivery' THEN
+        UPDATE delivery_trips dt SET status = 'out_for_delivery'
+        FROM order_driver_assignments oda
+        WHERE oda.order_id = p_order_id AND oda.trip_id = dt.id;
+
+        UPDATE drivers d SET status = 'busy', updated_at = now()
+        FROM order_driver_assignments oda
+        WHERE oda.order_id = p_order_id AND oda.driver_id = d.id;
+    END IF;
 
     RETURN QUERY SELECT true, 'تم تحديث حالة الطلب بنجاح'::TEXT, p_new_status;
 END;

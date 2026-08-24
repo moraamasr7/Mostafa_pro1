@@ -62,6 +62,8 @@ export default function AdminOrdersPage() {
   const [showDriverPanel, setShowDriverPanel] = useState(false)
   const [selectedOrderForDriver, setSelectedOrderForDriver] = useState<Order | null>(null)
   const [selectedDriverId, setSelectedDriverId] = useState<string>('')
+  const [selectedOrderForFailure, setSelectedOrderForFailure] = useState<Order | null>(null)
+  const [failureReason, setFailureReason] = useState<string>('العميل لا يرد على الهاتف')
 
   const [newDriverName, setNewDriverName] = useState('')
   const [newDriverPhone, setNewDriverPhone] = useState('')
@@ -330,6 +332,39 @@ export default function AdminOrdersPage() {
     }
   }
 
+  const handleConfirmFailure = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedOrderForFailure) return
+
+    setUpdatingOrderId(selectedOrderForFailure.id)
+    setActionError(null)
+
+    try {
+      const res = await fetch('/api/admin/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: selectedOrderForFailure.id,
+          new_status: 'failed',
+          failure_reason: failureReason,
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok) {
+        setActionSuccess('تم تسجيل حالة فشل التوصيل والسبب بسوبابيز بنجاح')
+        setSelectedOrderForFailure(null)
+        fetchOrdersAndDrivers(activeTab)
+      } else {
+        setActionError(data.error || 'تعذر تسجيل فشل التوصيل')
+      }
+    } catch {
+      setActionError('تعذر الاتصال بالسيرفر')
+    } finally {
+      setUpdatingOrderId(null)
+    }
+  }
+
   if (isAuthenticated === false) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-amber-900 to-zinc-900 flex items-center justify-center p-4">
@@ -379,7 +414,7 @@ export default function AdminOrdersPage() {
   }
 
   const eligibleDrivers = drivers.filter(
-    (d) => d.is_active && d.active_shift_id && d.status === 'available'
+    (d) => d.is_active && d.active_shift_id && (d.status === 'available' || d.status === 'busy')
   )
 
   return (
@@ -867,7 +902,14 @@ export default function AdminOrdersPage() {
                           disabled={isBusy}
                           className="flex-1 bg-cyan-700 hover:bg-cyan-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
                         >
-                          🎒 تم الاستلام من المطبخ
+                          🎒 تم استلام الشحنة بالفرع
+                        </button>
+                        <button
+                          onClick={() => handleDeliveryStatusUpdate(order.id, 'out_for_delivery')}
+                          disabled={isBusy}
+                          className="flex-1 bg-purple-700 hover:bg-purple-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                        >
+                          🚚 خرج مع الطيار للعميل
                         </button>
                       </div>
                     )}
@@ -879,7 +921,7 @@ export default function AdminOrdersPage() {
                           disabled={isBusy}
                           className="flex-1 bg-purple-700 hover:bg-purple-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
                         >
-                          🚚 خرج مع الطيار للعميل
+                          🚚 خرج مع الطيار للعميل (انطلاق الدليفري)
                         </button>
                       </div>
                     )}
@@ -893,13 +935,22 @@ export default function AdminOrdersPage() {
                         >
                           🎉 تم التوصيل للعميل بنجاح
                         </button>
+                        <button
+                          onClick={() => setSelectedOrderForFailure(order)}
+                          disabled={isBusy}
+                          className="bg-red-700 hover:bg-red-800 text-white font-bold px-3 py-2 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                        >
+                          ⚠️ تسجيل فشل التوصيل
+                        </button>
                       </div>
                     )}
 
-                    {(order.status === 'completed' || order.status === 'cancelled' || order.status === 'delivered') && (
-                      <div className="text-center py-1 bg-gray-100 rounded-xl text-xs font-bold text-gray-500">
+                    {(order.status === 'completed' || order.status === 'cancelled' || order.status === 'delivered' || order.status === 'failed') && (
+                      <div className="text-center py-2 bg-gray-100 rounded-xl text-xs font-bold text-gray-600">
                         {order.status === 'delivered'
-                          ? '🎉 تم التوصيل للعميل'
+                          ? '🎉 تم التوصيل للعميل بنجاح'
+                          : order.status === 'failed'
+                          ? '⚠️ تعذر التوصيل (مُسجل بالسبب في سوبابيز)'
                           : order.status === 'completed'
                           ? '✓ مكتمل ومعالج'
                           : '✕ ملغى'}
@@ -941,12 +992,22 @@ export default function AdminOrdersPage() {
                   required
                   className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-bold bg-gray-50"
                 >
-                  <option value="">-- اختر طياراً متاحاً --</option>
-                  {eligibleDrivers.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name} — 🟢 متاح
-                    </option>
-                  ))}
+                  <option value="">-- اختر طياراً متاحاً بالفرع --</option>
+                  {eligibleDrivers.map((d) => {
+                    const count = d.assigned_orders_count || 0
+                    let statusLabel = '🟢 متاح بالفرع (جاهز)'
+                    if (d.status === 'busy') {
+                      statusLabel = `🚚 بالشارع جاري التوصيل (${count} طلبات)`
+                    } else if (count > 0) {
+                      statusLabel = `📦 محمّل بـ ${count} طلبات بالفرع (تجهيز)`
+                    }
+
+                    return (
+                      <option key={d.id} value={d.id}>
+                        {d.name} — {statusLabel}
+                      </option>
+                    )
+                  })}
                 </select>
 
                 {eligibleDrivers.length === 0 && (
@@ -970,6 +1031,72 @@ export default function AdminOrdersPage() {
                   className="px-5 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold transition-all shadow-md shadow-purple-200 disabled:opacity-50"
                 >
                   {updatingOrderId === selectedOrderForDriver.id ? 'جاري التعيين...' : 'تأكيد التعيين ✓'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {selectedOrderForFailure && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-gray-100">
+            <div className="flex justify-between items-center">
+              <h3 className="text-base font-extrabold text-red-700">
+                ⚠️ تسجيل فشل توصيل الطلب #{selectedOrderForFailure.order_number}
+              </h3>
+              <button
+                onClick={() => setSelectedOrderForFailure(null)}
+                className="text-xs font-bold text-gray-400 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-500 leading-relaxed">
+              حدد سبب عدم التوصيل ليتم حفظه صراحة في سوبابيز دون إيقاف باقي طلبات رحلة الطيار:
+            </p>
+
+            <form onSubmit={handleConfirmFailure} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">سبب تعذر التوصيل:</label>
+                <select
+                  value={failureReason}
+                  onChange={(e) => setFailureReason(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-bold bg-gray-50 mb-2"
+                >
+                  <option value="العميل لا يرد على الهاتف">العميل لا يرد على الهاتف</option>
+                  <option value="العنوان غير صحيح أو غير واضح">العنوان غير صحيح أو غير واضح</option>
+                  <option value="العميل ألغى الطلب عند الوصول">العميل ألغى الطلب عند الوصول</option>
+                  <option value="مشكلة في تحصيل المبلغ المطلوب">مشكلة في تحصيل المبلغ المطلوب</option>
+                  <option value="سبب آخر">سبب آخر (كتابة يدوي)</option>
+                </select>
+
+                {failureReason === 'سبب آخر' && (
+                  <input
+                    type="text"
+                    placeholder="اكتب السبب بالتفصيل..."
+                    onChange={(e) => setFailureReason(e.target.value)}
+                    required
+                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-bold bg-white"
+                  />
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrderForFailure(null)}
+                  className="px-4 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={updatingOrderId === selectedOrderForFailure.id || !failureReason.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-red-700 hover:bg-red-800 text-white text-xs font-bold transition-all shadow-md shadow-red-200 disabled:opacity-50"
+                >
+                  {updatingOrderId === selectedOrderForFailure.id ? 'جاري الحفظ...' : 'تأكيد تسجيل الفشل ✓'}
                 </button>
               </div>
             </form>

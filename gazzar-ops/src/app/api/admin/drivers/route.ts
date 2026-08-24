@@ -61,7 +61,7 @@ export async function GET() {
 
     const formattedDrivers = ((drivers as unknown as DriverQueryRow[]) || []).map((d) => {
       const openShift = (d.driver_shifts || []).find((s) => s.status === 'open')
-      const activeAssignment = (d.order_driver_assignments || []).find((a) =>
+      const activeAssignments = (d.order_driver_assignments || []).filter((a) =>
         ['assigned', 'accepted', 'picked_up', 'out_for_delivery'].includes(a.status)
       )
 
@@ -72,7 +72,8 @@ export async function GET() {
         status: d.status,
         created_at: d.created_at,
         active_shift_id: openShift ? openShift.id : null,
-        current_order_id: activeAssignment ? activeAssignment.order_id : null,
+        assigned_orders_count: activeAssignments.length,
+        current_order_id: activeAssignments.length > 0 ? activeAssignments[0].order_id : null,
       }
     })
 

@@ -98,7 +98,7 @@ export default function AdminAssignmentsPage() {
 
         const driversList: Driver[] = driversData.drivers || []
         const eligible = driversList.filter(
-          (d) => d.is_active && d.active_shift_id && d.status === 'available'
+          (d) => d.is_active && d.active_shift_id && (d.status === 'available' || d.status === 'busy')
         )
         setAvailableDrivers(eligible)
       } else {
