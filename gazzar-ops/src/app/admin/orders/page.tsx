@@ -194,6 +194,7 @@ export default function AdminOrdersPage() {
         delivered: 'تم التوصيل للعميل',
         completed: 'تم الاستلام بالفرع',
         cancelled: 'تم الإلغاء',
+        failed: 'تعذر التوصيل',
       }
 
       setActionSuccess(`تم تحديث حالة الطلب بنجاح إلى (${statusLabels[newStatus] || newStatus})`)

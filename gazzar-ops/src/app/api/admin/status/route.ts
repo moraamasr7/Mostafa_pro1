@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { order_id, current_status, new_status } = body
+    const { order_id, current_status, new_status, failure_reason, collected_amount } = body
 
     if (!order_id || typeof order_id !== 'string') {
       return NextResponse.json(
@@ -34,6 +34,40 @@ export async function POST(request: NextRequest) {
     }
 
     const serverSupabase = getSupabaseServerClient()
+
+    if (new_status === 'failed' || (new_status === 'delivered' && failure_reason !== undefined)) {
+      if (new_status === 'failed' && (!failure_reason || typeof failure_reason !== 'string' || !failure_reason.trim())) {
+        return NextResponse.json(
+          { error: 'سبب عدم التوصيل مطلوب عند تسجيل فشل التوصيل' },
+          { status: 400 }
+        )
+      }
+
+      const { data: rpcOutcome, error: rpcOutcomeErr } = await serverSupabase.rpc('record_delivery_outcome_secure', {
+        p_order_id: order_id,
+        p_outcome: new_status,
+        p_failure_reason: failure_reason || null,
+        p_collected_amount: collected_amount || 0.00,
+        p_staff_actor: 'admin_cashier',
+      })
+
+      if (!rpcOutcomeErr && rpcOutcome && rpcOutcome.length > 0) {
+        const res = rpcOutcome[0]
+        if (!res.success) {
+          return NextResponse.json({ error: res.message }, { status: 400 })
+        }
+        return NextResponse.json(
+          {
+            success: true,
+            status: new_status,
+            message: res.message,
+            trip_completed: res.trip_completed,
+            driver_released: res.driver_released,
+          },
+          { status: 200 }
+        )
+      }
+    }
 
     const { data: rpcData, error: rpcError } = await serverSupabase.rpc('update_order_status_secure', {
       p_order_id: order_id,

@@ -1,6 +1,7 @@
 import { supabase } from './supabase'
 
 export const BUSINESS_TIMEZONE = 'Africa/Cairo'
+export const RESTAURANT_COORDS = { lat: 30.126131, lng: 31.298350 }
 
 export interface ScheduleWindow {
   open: string
@@ -36,6 +37,33 @@ export interface ScheduleOverride {
   close_time: string
   is_closed: boolean
   reason?: string
+}
+
+export function calculateDeliveryFee(customerLat?: number | null, customerLng?: number | null): { distanceKm: number | null; fee: number } {
+  if (customerLat == null || customerLng == null || isNaN(customerLat) || isNaN(customerLng)) {
+    return { distanceKm: null, fee: 20.00 }
+  }
+
+  const R = 6371 // km
+  const dLat = (customerLat - RESTAURANT_COORDS.lat) * (Math.PI / 180)
+  const dLon = (customerLng - RESTAURANT_COORDS.lng) * (Math.PI / 180)
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(RESTAURANT_COORDS.lat * (Math.PI / 180)) *
+      Math.cos(customerLat * (Math.PI / 180)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2)
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  const distanceKm = Number((R * c).toFixed(2))
+
+  let fee = 15.00
+  if (distanceKm > 3.0) {
+    fee = 15.00 + Math.ceil(distanceKm - 3.0) * 5.00
+  }
+
+  return { distanceKm, fee }
 }
 
 export function getCairoDateInfo(date: Date = new Date()) {

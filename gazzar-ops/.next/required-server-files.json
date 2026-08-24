@@ -320,10 +320,10 @@
     "htmlLimitedBots": "[\\w-]+-Google|Google-[\\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight",
     "bundlePagesRouterDependencies": false,
     "configFileName": "next.config.ts",
-    "repoRoot": "C:\\Users\\mamdo\\Documents\\GitHub\\Mostafa_pro1",
     "turbopack": {
       "root": "C:\\Users\\mamdo\\Documents\\GitHub\\Mostafa_pro1"
     },
+    "repoRoot": "C:\\Users\\mamdo\\Documents\\GitHub\\Mostafa_pro1",
     "distDirRoot": ".next"
   },
   "appDir": "C:\\Users\\mamdo\\Documents\\GitHub\\Mostafa_pro1\\gazzar-ops",

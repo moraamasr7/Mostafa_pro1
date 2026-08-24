@@ -8,19 +8,40 @@ export type OrderStatus =
   | 'delivered'
   | 'completed'
   | 'cancelled'
+  | 'failed'
 
 export type OrderType = 'takeaway' | 'delivery' | 'dine_in'
+
+export interface Order {
+  id: string
+  order_number: number
+  customer_name: string
+  customer_phone: string
+  delivery_address?: string
+  customer_lat?: number
+  customer_lng?: number
+  delivery_distance_km?: number
+  delivery_fee?: number
+  order_type: OrderType
+  payment_method?: string
+  payment_receipt_url?: string
+  status: OrderStatus
+  total_amount: number
+  notes?: string
+  created_at: string
+}
 
 export const ALLOWED_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending: ['processing', 'cancelled'],
   processing: ['ready', 'completed', 'cancelled'],
   ready: ['completed', 'assigned', 'cancelled'],
   assigned: ['picked_up', 'cancelled'],
-  picked_up: ['out_for_delivery'],
-  out_for_delivery: ['delivered'],
+  picked_up: ['out_for_delivery', 'delivered', 'failed'],
+  out_for_delivery: ['delivered', 'failed'],
   delivered: [],
   completed: [],
   cancelled: [],
+  failed: [],
 }
 
 export function canTransitionStatus(
@@ -34,7 +55,7 @@ export function canTransitionStatus(
   }
 
   if (orderType === 'takeaway') {
-    const driverStates: OrderStatus[] = ['assigned', 'picked_up', 'out_for_delivery', 'delivered']
+    const driverStates: OrderStatus[] = ['assigned', 'picked_up', 'out_for_delivery', 'delivered', 'failed']
     if (driverStates.includes(newStatus)) {
       return false
     }
@@ -120,5 +141,12 @@ export const STATUS_UI_CONFIG: Record<OrderStatus, StatusUIConfig> = {
     color: 'text-red-400',
     bgColor: 'bg-red-500/10',
     borderColor: 'border-red-500/20',
+  },
+  failed: {
+    label: 'تعذر التوصيل',
+    icon: '⚠️',
+    color: 'text-red-400',
+    bgColor: 'bg-red-950/20',
+    borderColor: 'border-red-800/40',
   },
 }

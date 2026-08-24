@@ -1,10 +1,5 @@
 -- ==============================================================================
--- مخطط قاعدة بيانات مطعم مصطفى الجزار — النسخة النهائية المحمية على Supabase
--- ==============================================================================
-
-
--- ==============================================================================
--- الجزء الأول: هيكل الجداول (Tables)
+-- مخطط قاعدة بيانات مطعم مصطفى الجزار — المستودع التشغيلي الموحد (Unified Ops Schema)
 -- ==============================================================================
 
 -- 1) جدول الأقسام
@@ -26,7 +21,7 @@ CREATE TABLE IF NOT EXISTS menu_items (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 3) جدول الأحجام/الخيارات والأسعار — المصدر الوحيد للحقيقة بالنسبة للسعر
+-- 3) جدول الأحجام/الخيارات والأسعار
 CREATE TABLE IF NOT EXISTS item_variants (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     item_id UUID NOT NULL REFERENCES menu_items(id) ON DELETE CASCADE,
@@ -36,7 +31,7 @@ CREATE TABLE IF NOT EXISTS item_variants (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 4) جدول الطلبات — يحتوي على رمز تتبع خاص (tracking_token) وهيكل دورة حياة شامل لدعم الاستلام والدليفري مستقبلاً
+-- 4) جدول الطلبات — يحتوي على بيانات موقع العميل وحساب المسافة وتكلفة التوصيل
 CREATE TABLE IF NOT EXISTS orders (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     tracking_token UUID DEFAULT gen_random_uuid() NOT NULL,
@@ -44,28 +39,29 @@ CREATE TABLE IF NOT EXISTS orders (
     customer_name VARCHAR(100) NOT NULL,
     customer_phone VARCHAR(20) NOT NULL,
     delivery_address TEXT,
+    customer_lat DOUBLE PRECISION,
+    customer_lng DOUBLE PRECISION,
+    delivery_distance_km DECIMAL(10, 2),
+    delivery_fee DECIMAL(10, 2) DEFAULT 0.00 CHECK (delivery_fee >= 0),
     order_type VARCHAR(20) NOT NULL DEFAULT 'takeaway'
         CHECK (order_type IN ('delivery', 'takeaway', 'dine_in')),
     payment_method VARCHAR(30) DEFAULT 'cash',
     payment_receipt_url TEXT,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery', 'delivered', 'completed', 'cancelled', 'failed')),
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
     total_amount DECIMAL(10, 2) DEFAULT 0.00 CHECK (total_amount >= 0),
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- تحديث وتحديث قيد الحالات المسموحة في جدول الطلبات لمنع تعارض النسخ القديمة
+-- التأكد من وجود أعمدة المسافة والرسوم وإعادة ضبط قيد الحالات المسموحة
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_lat DOUBLE PRECISION;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_lng DOUBLE PRECISION;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_distance_km DECIMAL(10, 2);
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_fee DECIMAL(10, 2) DEFAULT 0.00;
+
 ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
 ALTER TABLE orders ADD CONSTRAINT orders_status_check 
     CHECK (status IN ('pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery', 'delivered', 'completed', 'cancelled', 'failed'));
-
--- إكمال الحقول في حالة وجود الجدول مسبقاً من نسخة سابقة
-ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_token UUID DEFAULT gen_random_uuid() NOT NULL;
-ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
-ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type VARCHAR(20) DEFAULT 'takeaway';
-ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_method VARCHAR(30) DEFAULT 'cash';
-ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_receipt_url TEXT;
 
 -- 5) جدول عناصر الطلب
 CREATE TABLE IF NOT EXISTS order_items (
@@ -79,14 +75,26 @@ CREATE TABLE IF NOT EXISTS order_items (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 6) جدول طيارين الدليفري (Drivers)
+-- 6) جدول طيارين الدليفري العام (Drivers)
 CREATE TABLE IF NOT EXISTS drivers (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    phone VARCHAR(20) NOT NULL UNIQUE,
     is_active BOOLEAN DEFAULT true,
     status VARCHAR(20) NOT NULL DEFAULT 'offline'
         CHECK (status IN ('offline', 'available', 'busy')),
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+-- إسقاط قيد عدم السماح بقيم فارغة للهاتف على جدول drivers القديم لدعم فصل driver_credentials
+ALTER TABLE drivers ALTER COLUMN phone DROP NOT NULL;
+
+-- 6.1) جدول اعتماد بيانات دخول الطيارين المحمي (Driver Credentials - Private Server Only)
+CREATE TABLE IF NOT EXISTS driver_credentials (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    driver_id UUID NOT NULL UNIQUE REFERENCES drivers(id) ON DELETE CASCADE,
+    phone VARCHAR(20) NOT NULL UNIQUE,
+    pin_code VARCHAR(100),
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -102,7 +110,7 @@ CREATE TABLE IF NOT EXISTS driver_shifts (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 8) جدول رحلات خطوط سير الدليفري (Delivery Trips / Runs)
+-- 8) جدول رحلات خطوط سير الدليفري (Delivery Trips)
 CREATE TABLE IF NOT EXISTS delivery_trips (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     trip_number BIGINT GENERATED ALWAYS AS IDENTITY,
@@ -112,163 +120,109 @@ CREATE TABLE IF NOT EXISTS delivery_trips (
         CHECK (status IN ('created', 'picked_up', 'out_for_delivery', 'completed', 'cancelled')),
     expected_amount DECIMAL(10, 2) DEFAULT 0.00 CHECK (expected_amount >= 0),
     collected_amount DECIMAL(10, 2) DEFAULT 0.00 CHECK (collected_amount >= 0),
-    collection_status VARCHAR(20) DEFAULT 'pending'
-        CHECK (collection_status IN ('pending', 'collected', 'partially_collected', 'not_collected')),
-    dispatched_at TIMESTAMPTZ,
-    completed_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+    collection_status VARCHAR(20) DEFAULT 'pending',
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+    completed_at TIMESTAMPTZ
 );
 
--- 9) جدول تعيينات طيارين الدليفري للطلبات (Order Driver Assignments)
+-- 9) جدول إسناد الطلبات للطيارين
 CREATE TABLE IF NOT EXISTS order_driver_assignments (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     driver_id UUID NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
-    shift_id UUID NOT NULL REFERENCES driver_shifts(id) ON DELETE CASCADE,
+    shift_id UUID REFERENCES driver_shifts(id) ON DELETE SET NULL,
     trip_id UUID REFERENCES delivery_trips(id) ON DELETE SET NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'assigned'
-        CHECK (status IN ('assigned', 'accepted', 'rejected', 'picked_up', 'out_for_delivery', 'delivered', 'failed', 'cancelled', 'reassigned')),
     assigned_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
-    accepted_at TIMESTAMPTZ,
+    status VARCHAR(20) NOT NULL DEFAULT 'assigned'
+        CHECK (status IN ('assigned', 'picked_up', 'out_for_delivery', 'delivered', 'failed', 'cancelled')),
     picked_up_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
-    cancelled_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+    cancelled_at TIMESTAMPTZ
 );
 
--- 10) جدول نتائج وتقرير توصيل الطلبات (Delivery Outcomes & Failure Audit)
+-- 10) جدول نتائج وتقرير التوصيل (Delivery Outcomes & Failure Audit)
 CREATE TABLE IF NOT EXISTS delivery_outcomes (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    order_id UUID NOT NULL UNIQUE REFERENCES orders(id) ON DELETE CASCADE,
     trip_id UUID REFERENCES delivery_trips(id) ON DELETE SET NULL,
     assignment_id UUID REFERENCES order_driver_assignments(id) ON DELETE SET NULL,
-    outcome VARCHAR(20) NOT NULL CHECK (outcome IN ('delivered', 'failed')),
-    failure_reason VARCHAR(255),
-    expected_amount DECIMAL(10, 2) DEFAULT 0.00,
-    collected_amount DECIMAL(10, 2) DEFAULT 0.00,
+    driver_id UUID NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+    outcome VARCHAR(20) NOT NULL CHECK (outcome IN ('delivered', 'failed', 'cancelled')),
+    failure_reason TEXT,
+    expected_amount DECIMAL(10, 2) DEFAULT 0.00 CHECK (expected_amount >= 0),
+    collected_amount DECIMAL(10, 2) DEFAULT 0.00 CHECK (collected_amount >= 0),
     recorded_by VARCHAR(100) DEFAULT 'staff',
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 11) جدول مواعيد عمل المطعم الأسبوعية (Restaurant Recurring Operating Hours)
+-- تحديث جدول delivery_outcomes للتأكد من وجود الأعمدة الموحدة
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS driver_id UUID;
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS trip_id UUID;
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS assignment_id UUID;
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS expected_amount DECIMAL(10, 2) DEFAULT 0.00;
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS collected_amount DECIMAL(10, 2) DEFAULT 0.00;
+ALTER TABLE delivery_outcomes ADD COLUMN IF NOT EXISTS recorded_by VARCHAR(100) DEFAULT 'staff';
+
+-- 11) جدول مواعيد عمل المطعم
 CREATE TABLE IF NOT EXISTS restaurant_operating_hours (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    day_of_week INT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
-    open_time TIME NOT NULL DEFAULT '10:00:00',
-    close_time TIME NOT NULL DEFAULT '02:00:00',
+    day_of_week INT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6) UNIQUE,
+    open_time TIME NOT NULL,
+    close_time TIME NOT NULL,
     is_closed BOOLEAN DEFAULT false,
-    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
-    CONSTRAINT uq_day_operating_hours UNIQUE (day_of_week)
-);
-
--- 12) جدول العطلات والإغلاقات الاستثنائية للمطعم (Restaurant Special Closures)
-CREATE TABLE IF NOT EXISTS restaurant_special_closures (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    closure_date DATE NOT NULL UNIQUE,
-    reason VARCHAR(255) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 13) جدول المواعيد الاستثنائية وتجاوز جدول العمل (Restaurant Schedule Overrides)
+CREATE TABLE IF NOT EXISTS restaurant_special_closures (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    closure_date DATE NOT NULL UNIQUE,
+    reason TEXT,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS restaurant_schedule_overrides (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     override_date DATE NOT NULL UNIQUE,
     open_time TIME NOT NULL,
     close_time TIME NOT NULL,
-    is_closed BOOLEAN DEFAULT false,
-    reason VARCHAR(255),
+    reason TEXT,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
-
 -- ==============================================================================
--- الجزء الثاني: الفهارس والقيود الجزئية الفريدة (Indexes & Constraints)
+-- دوال الـ RPC المحمية الموحدة (Unified RPC Functions with Pessimistic Locks)
 -- ==============================================================================
-CREATE INDEX IF NOT EXISTS idx_menu_items_category ON menu_items(category_id);
-CREATE INDEX IF NOT EXISTS idx_item_variants_item ON item_variants(item_id);
-CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id);
-CREATE INDEX IF NOT EXISTS idx_order_items_variant ON order_items(variant_id);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_orders_tracking_token ON orders(tracking_token);
 
-CREATE INDEX IF NOT EXISTS idx_drivers_status ON drivers(status);
-CREATE INDEX IF NOT EXISTS idx_driver_shifts_driver ON driver_shifts(driver_id);
-CREATE INDEX IF NOT EXISTS idx_delivery_trips_driver ON delivery_trips(driver_id);
-CREATE INDEX IF NOT EXISTS idx_delivery_trips_shift ON delivery_trips(shift_id);
-CREATE INDEX IF NOT EXISTS idx_order_driver_assignments_order ON order_driver_assignments(order_id);
-CREATE INDEX IF NOT EXISTS idx_order_driver_assignments_driver ON order_driver_assignments(driver_id);
-CREATE INDEX IF NOT EXISTS idx_order_driver_assignments_trip ON order_driver_assignments(trip_id);
-CREATE INDEX IF NOT EXISTS idx_delivery_outcomes_order ON delivery_outcomes(order_id);
-CREATE INDEX IF NOT EXISTS idx_delivery_outcomes_trip ON delivery_outcomes(trip_id);
-
-CREATE INDEX IF NOT EXISTS idx_special_closures_date ON restaurant_special_closures(closure_date);
-CREATE INDEX IF NOT EXISTS idx_schedule_overrides_date ON restaurant_schedule_overrides(override_date);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_shift_per_driver
-ON driver_shifts (driver_id)
-WHERE status = 'open';
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_assignment_per_order
-ON order_driver_assignments (order_id)
-WHERE status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_assignment_per_driver
-ON order_driver_assignments (driver_id)
-WHERE status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
-
-
--- ==============================================================================
--- الجزء الثالث: تريجر تحديث إجمالي الطلب تلقائيًا
--- ==============================================================================
-CREATE OR REPLACE FUNCTION update_order_total_amount()
-RETURNS TRIGGER AS $$
+-- Dynamic drop for all existing function overloads to prevent error 42725 / 42P13
+DO $$
+DECLARE
+    r RECORD;
 BEGIN
-    UPDATE orders
-    SET total_amount = COALESCE((
-        SELECT SUM(subtotal)
-        FROM order_items
-        WHERE order_id = COALESCE(NEW.order_id, OLD.order_id)
-    ), 0.00)
-    WHERE id = COALESCE(NEW.order_id, OLD.order_id);
+    FOR r IN 
+        SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' 
+          AND p.proname IN (
+              'create_order_secure',
+              'assign_orders_to_driver_secure',
+              'assign_order_to_driver_secure',
+              'reassign_order_secure',
+              'update_delivery_status_secure',
+              'record_delivery_outcome_secure',
+              'complete_delivery_trip_secure',
+              'create_delivery_trip_secure',
+              'start_driver_shift_secure',
+              'end_driver_shift_secure',
+              'update_order_status_secure'
+          )
+    LOOP
+        EXECUTE format('DROP FUNCTION IF EXISTS public.%I(%s) CASCADE;', r.proname, r.args);
+    END LOOP;
+END $$;
 
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE TRIGGER trigger_recalculate_order_total
-AFTER INSERT OR UPDATE OR DELETE ON order_items
-FOR EACH ROW
-EXECUTE FUNCTION update_order_total_amount();
-
-
--- ==============================================================================
--- الجزء الرابع: View المنيو الكامل
--- ==============================================================================
-CREATE OR REPLACE VIEW v_full_menu AS
-SELECT
-    c.id AS category_id,
-    c.name AS category_name,
-    c.display_order AS category_order,
-    m.id AS item_id,
-    m.name AS item_name,
-    m.description AS item_description,
-    m.is_available AS item_available,
-    v.id AS variant_id,
-    v.variant_name,
-    v.price,
-    v.is_available AS variant_available
-FROM categories c
-JOIN menu_items m ON c.id = m.category_id
-JOIN item_variants v ON m.id = v.item_id
-WHERE c.is_active = true AND m.is_available = true AND v.is_available = true
-ORDER BY c.display_order, m.name, v.price ASC;
-
-
--- ==============================================================================
--- الجزء الخامس: دالة إنشاء طلب ذرية ومحمية (Atomic RPC Order Creation)
--- ==============================================================================
+-- 1) دالة إنشاء طلب بأسلوب ذري مع حساب المسافة وسعر التوصيل تلقائياً
 CREATE OR REPLACE FUNCTION create_order_secure(
     p_customer_name VARCHAR,
     p_customer_phone VARCHAR,
@@ -277,12 +231,16 @@ CREATE OR REPLACE FUNCTION create_order_secure(
     p_order_type VARCHAR DEFAULT 'takeaway',
     p_delivery_address TEXT DEFAULT NULL,
     p_payment_method VARCHAR DEFAULT 'cash',
-    p_payment_receipt_url TEXT DEFAULT NULL
+    p_payment_receipt_url TEXT DEFAULT NULL,
+    p_customer_lat DOUBLE PRECISION DEFAULT NULL,
+    p_customer_lng DOUBLE PRECISION DEFAULT NULL
 )
 RETURNS TABLE (
     order_id UUID,
     order_number BIGINT,
     total_amount DECIMAL(10, 2),
+    delivery_fee DECIMAL(10, 2),
+    delivery_distance_km DECIMAL(10, 2),
     tracking_token UUID
 ) AS $$
 DECLARE
@@ -300,6 +258,16 @@ DECLARE
     v_cat_active BOOLEAN;
     v_valid_order_type VARCHAR;
     v_valid_payment_method VARCHAR;
+    
+    -- حساب المسافة ورسوم التوصيل (إحداثيات المطعم الثابتة: 30.126131, 31.298350)
+    v_rest_lat CONSTANT DOUBLE PRECISION := 30.126131;
+    v_rest_lng CONSTANT DOUBLE PRECISION := 31.298350;
+    v_dlat DOUBLE PRECISION;
+    v_dlng DOUBLE PRECISION;
+    v_a DOUBLE PRECISION;
+    v_c DOUBLE PRECISION;
+    v_dist DECIMAL(10, 2) := NULL;
+    v_fee DECIMAL(10, 2) := 0.00;
 BEGIN
     IF p_customer_name IS NULL OR length(trim(p_customer_name)) = 0 THEN
         RAISE EXCEPTION 'اسم العميل مطلوب';
@@ -316,8 +284,27 @@ BEGIN
 
     v_valid_payment_method := COALESCE(NULLIF(trim(p_payment_method), ''), 'cash');
 
-    IF v_valid_order_type = 'delivery' AND (p_delivery_address IS NULL OR length(trim(p_delivery_address)) < 5) THEN
-        RAISE EXCEPTION 'عنوان التوصيل مطلوب بحد أدنى 5 حروف عند اختيار الدليفري';
+    IF v_valid_order_type = 'delivery' THEN
+        IF p_delivery_address IS NULL OR length(trim(p_delivery_address)) < 5 THEN
+            RAISE EXCEPTION 'عنوان التوصيل مطلوب بحد أدنى 5 حروف عند اختيار الدليفري';
+        END IF;
+
+        IF p_customer_lat IS NOT NULL AND p_customer_lng IS NOT NULL THEN
+            v_dlat := radians(p_customer_lat - v_rest_lat);
+            v_dlng := radians(p_customer_lng - v_rest_lng);
+            v_a := sin(v_dlat / 2.0)^2 + cos(radians(v_rest_lat)) * cos(radians(p_customer_lat)) * sin(v_dlng / 2.0)^2;
+            v_c := 2.0 * atan2(sqrt(v_a), sqrt(1.0 - v_a));
+            v_dist := round((6371.0 * v_c)::numeric, 2);
+
+            -- الرسوم الأساسية: 15 ج.م لأول 3 كم + 5 ج.م لكل كم إضافي
+            IF v_dist <= 3.0 THEN
+                v_fee := 15.00;
+            ELSE
+                v_fee := 15.00 + ceil(v_dist - 3.0) * 5.00;
+            END IF;
+        ELSE
+            v_fee := 20.00; -- رسم توصيل تقديري افتراضي في حالة عدم تحديد الخريطة
+        END IF;
     END IF;
 
     IF v_valid_order_type = 'takeaway' AND (p_payment_receipt_url IS NULL OR length(trim(p_payment_receipt_url)) < 3) THEN
@@ -334,6 +321,10 @@ BEGIN
         notes,
         order_type,
         delivery_address,
+        customer_lat,
+        customer_lng,
+        delivery_distance_km,
+        delivery_fee,
         payment_method,
         payment_receipt_url,
         status
@@ -343,6 +334,10 @@ BEGIN
         NULLIF(trim(p_notes), ''),
         v_valid_order_type,
         NULLIF(trim(p_delivery_address), ''),
+        p_customer_lat,
+        p_customer_lng,
+        v_dist,
+        v_fee,
         v_valid_payment_method,
         NULLIF(trim(p_payment_receipt_url), ''),
         'pending'
@@ -378,19 +373,15 @@ BEGIN
         VALUES (v_order_id, v_variant_id, v_quantity, v_price, NULLIF(trim(v_item_notes), ''));
     END LOOP;
 
-    SELECT orders.total_amount INTO v_total FROM orders WHERE id = v_order_id;
+    SELECT (orders.total_amount + COALESCE(orders.delivery_fee, 0.00)) INTO v_total FROM orders WHERE id = v_order_id;
 
-    RETURN QUERY SELECT v_order_id, v_order_number, v_total, v_tracking_token;
+    RETURN QUERY SELECT v_order_id, v_order_number, v_total, v_fee, v_dist, v_tracking_token;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
-
--- ==============================================================================
--- الجزء السادس: دوال إدارية وذرية لإنهاء وتدقيق خطوط سير الدليفري (Trips RPCs)
--- ==============================================================================
-
--- 1) دالة إنشاء خط سير دليفري محمي بسعة أقصاها 5 طلبات (Atomic Trip Creation with Max 5 Capacity)
-CREATE OR REPLACE FUNCTION create_delivery_trip_secure(
+-- 2) دالة تعيين طلبات دليفري لطيار موحدة وذرية
+-- UNIFORM LOCK ORDERING: 1. drivers FOR UPDATE -> 2. driver_shifts FOR UPDATE -> 3. delivery_trips FOR UPDATE -> 4. orders FOR UPDATE -> 5. order_driver_assignments FOR UPDATE
+CREATE OR REPLACE FUNCTION assign_orders_to_driver_secure(
     p_driver_id UUID,
     p_order_ids JSONB
 )
@@ -401,93 +392,123 @@ RETURNS TABLE (
     trip_number BIGINT
 ) AS $$
 DECLARE
+    v_driver_rec RECORD;
     v_shift_id UUID;
-    v_driver_active BOOLEAN;
-    v_driver_status VARCHAR;
-    v_new_trip_id UUID;
-    v_new_trip_number BIGINT;
+    v_trip_id UUID;
+    v_trip_number BIGINT;
     v_order_count INT;
-    v_order_id_elem JSONB;
+    v_order_elem JSONB;
     v_order_id UUID;
-    v_order_type VARCHAR;
-    v_order_status VARCHAR;
-    v_assignment_id UUID;
+    v_order_rec RECORD;
     v_expected_total DECIMAL(10, 2) := 0;
-    v_order_amount DECIMAL(10, 2);
 BEGIN
     v_order_count := jsonb_array_length(p_order_ids);
     IF v_order_count = 0 THEN
-        RAISE EXCEPTION 'يجب تحديد طلب واحد على الأقل لإنشاء خط سير';
-    END IF;
-    IF v_order_count > 5 THEN
-        RAISE EXCEPTION 'الحد الأقصى لخط السير الواحد هو 5 طلبات دليفري فقط';
+        RAISE EXCEPTION 'يجب تحديد طلب واحد على الأقل لإسناده للطيار';
     END IF;
 
-    SELECT is_active, status INTO v_driver_active, v_driver_status FROM drivers WHERE id = p_driver_id;
-    IF v_driver_active IS NULL OR NOT v_driver_active THEN
+    IF v_order_count > 5 THEN
+        RAISE EXCEPTION 'الحد الأقصى لرحلة التوصيل الواحدة هو 5 طلبات فقط';
+    END IF;
+
+    -- 1. LOCK DRIVERS
+    SELECT id, name, is_active, status INTO v_driver_rec
+    FROM drivers
+    WHERE id = p_driver_id
+    FOR UPDATE;
+
+    IF v_driver_rec.id IS NULL OR NOT v_driver_rec.is_active THEN
         RAISE EXCEPTION 'الطيار غير موجود أو غير نشط';
     END IF;
 
-    SELECT id INTO v_shift_id FROM driver_shifts WHERE driver_id = p_driver_id AND status = 'open';
+    -- 2. LOCK DRIVER_SHIFTS
+    SELECT id INTO v_shift_id
+    FROM driver_shifts
+    WHERE driver_id = p_driver_id AND status = 'open'
+    FOR UPDATE;
+
     IF v_shift_id IS NULL THEN
-        RAISE EXCEPTION 'الطيار ليس لديه وردية مفتوحة حالياً';
+        RAISE EXCEPTION 'عفواً، لا يمكن إسناد طلبات لطيار ليس لديه وردية مفتوحة حالياً (isShiftOpen = false)';
     END IF;
 
-    -- التحقق السارم من كل طلب (أن يكون دليفري وفي حالة جاهز أو معين مسبقاً للطيار)
-    FOR v_order_id_elem IN SELECT * FROM jsonb_array_elements(p_order_ids)
+    -- 3. LOCK DELIVERY_TRIPS (البحث عن رحلة نشطة أو تجهيز رحلة جديدة)
+    SELECT id, delivery_trips.trip_number INTO v_trip_id, v_trip_number
+    FROM delivery_trips
+    WHERE driver_id = p_driver_id AND shift_id = v_shift_id AND status IN ('created', 'picked_up', 'out_for_delivery')
+    ORDER BY created_at DESC
+    LIMIT 1
+    FOR UPDATE;
+
+    IF v_trip_id IS NULL THEN
+        INSERT INTO delivery_trips (driver_id, shift_id, status, expected_amount)
+        VALUES (p_driver_id, v_shift_id, 'created', 0.00)
+        RETURNING id, delivery_trips.trip_number INTO v_trip_id, v_trip_number;
+    END IF;
+
+    -- 4. LOCK ORDERS AND ASSIGN
+    FOR v_order_elem IN SELECT * FROM jsonb_array_elements(p_order_ids)
     LOOP
-        v_order_id := (v_order_id_elem->>'order_id')::UUID;
-        
-        SELECT order_type, status, total_amount INTO v_order_type, v_order_status, v_order_amount
-        FROM orders WHERE id = v_order_id;
-
-        IF v_order_type IS NULL THEN
-            RAISE EXCEPTION 'أحد الطلبات غير موجود';
+        v_order_id := (v_order_elem->>'order_id')::UUID;
+        IF v_order_id IS NULL THEN
+            v_order_id := (v_order_elem#>>'{}')::UUID;
         END IF;
 
-        IF v_order_type <> 'delivery' THEN
-            RAISE EXCEPTION 'يمكن إضافة طلبات الدليفري فقط إلى خطوط السير';
+        SELECT id, order_type, status, total_amount, delivery_fee INTO v_order_rec
+        FROM orders
+        WHERE id = v_order_id
+        FOR UPDATE;
+
+        IF v_order_rec.id IS NULL THEN
+            RAISE EXCEPTION 'أحد الطلبات المحددة غير موجود';
         END IF;
 
-        IF v_order_status NOT IN ('ready', 'assigned') THEN
-            RAISE EXCEPTION 'لا يمكن إضافة الطلب لخط السير إلا إذا كان في حالة جاهز أو معين للطيار';
+        IF v_order_rec.order_type <> 'delivery' THEN
+            RAISE EXCEPTION 'طلب رقم % ليس طلب دليفري', v_order_rec.id;
         END IF;
 
-        v_expected_total := v_expected_total + COALESCE(v_order_amount, 0);
+        IF v_order_rec.status NOT IN ('ready', 'assigned') THEN
+            RAISE EXCEPTION 'لا يمكن إسناد الطلب إلا إذا كان في حالة (جاهز بالمطبخ)';
+        END IF;
+
+        -- إنشاء قيد الإسناد
+        INSERT INTO order_driver_assignments (order_id, driver_id, shift_id, trip_id, status)
+        VALUES (v_order_id, p_driver_id, v_shift_id, v_trip_id, 'assigned')
+        ON CONFLICT DO NOTHING;
+
+        UPDATE orders SET status = 'assigned' WHERE id = v_order_id;
+        v_expected_total := v_expected_total + COALESCE(v_order_rec.total_amount, 0) + COALESCE(v_order_rec.delivery_fee, 0);
     END LOOP;
 
-    INSERT INTO delivery_trips (driver_id, shift_id, status, expected_amount)
-    VALUES (p_driver_id, v_shift_id, 'created', v_expected_total)
-    RETURNING id, delivery_trips.trip_number INTO v_new_trip_id, v_new_trip_number;
-
-    -- ربط الطلبات أو إنشائها وتخصيصها للرحلة
-    FOR v_order_id_elem IN SELECT * FROM jsonb_array_elements(p_order_ids)
-    LOOP
-        v_order_id := (v_order_id_elem->>'order_id')::UUID;
-
-        SELECT id INTO v_assignment_id
-        FROM order_driver_assignments
-        WHERE order_id = v_order_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
-
-        IF v_assignment_id IS NOT NULL THEN
-            UPDATE order_driver_assignments
-            SET trip_id = v_new_trip_id
-            WHERE id = v_assignment_id;
-        ELSE
-            INSERT INTO order_driver_assignments (order_id, driver_id, shift_id, trip_id, status)
-            VALUES (v_order_id, p_driver_id, v_shift_id, v_new_trip_id, 'assigned');
-
-            UPDATE orders SET status = 'assigned' WHERE id = v_order_id;
-        END IF;
-    END LOOP;
-
+    -- تحديث إجمالي المبلغ المتوقع للرحلة وتحديث حالة الطيار تلقائياً إلى busy
+    UPDATE delivery_trips SET expected_amount = COALESCE(expected_amount, 0) + v_expected_total WHERE id = v_trip_id;
     UPDATE drivers SET status = 'busy', updated_at = now() WHERE id = p_driver_id;
 
-    RETURN QUERY SELECT true, 'تم إنشاء خط السير وتخصيصه بنجاح'::TEXT, v_new_trip_id, v_new_trip_number;
+    RETURN QUERY SELECT true, 'تم إسناد الطلبات للطيار وإنشاء خط السير بنجاح'::TEXT, v_trip_id, v_trip_number;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
--- 2) دالة تسجيل نتيجة التوصيل الفردية (Record Individual Delivery Outcome)
+-- Drop existing assign_order_to_driver_secure functions to allow changing parameter names without error 42P13
+DROP FUNCTION IF EXISTS assign_order_to_driver_secure(uuid, uuid) CASCADE;
+
+-- 2.1) دالة توافقية لدعم الاستدعاءات الفردية بالشكل القديم: assign_order_to_driver_secure
+CREATE OR REPLACE FUNCTION assign_order_to_driver_secure(
+    p_driver_id UUID,
+    p_order_id UUID
+)
+RETURNS TABLE (
+    success BOOLEAN,
+    message TEXT,
+    assignment_id UUID
+) AS $$
+BEGIN
+    RETURN QUERY 
+    SELECT a.success, a.message, a.trip_id AS assignment_id
+    FROM assign_orders_to_driver_secure(p_driver_id, jsonb_build_array(jsonb_build_object('order_id', p_order_id))) a;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- 3) دالة تسجيل نتيجة التوصيل الفردية مع تحرير الطيار تلقائياً (Unified Delivery Outcome & Auto Driver Release)
+-- UNIFORM LOCK ORDERING: 1. drivers FOR UPDATE -> 2. driver_shifts FOR UPDATE -> 3. delivery_trips FOR UPDATE -> 4. orders FOR UPDATE -> 5. order_driver_assignments FOR UPDATE
 CREATE OR REPLACE FUNCTION record_delivery_outcome_secure(
     p_order_id UUID,
     p_outcome VARCHAR,
@@ -495,27 +516,55 @@ CREATE OR REPLACE FUNCTION record_delivery_outcome_secure(
     p_collected_amount DECIMAL DEFAULT 0.00,
     p_staff_actor VARCHAR DEFAULT 'staff'
 )
-RETURNS TABLE (success BOOLEAN, message TEXT) AS $$
+RETURNS TABLE (
+    success BOOLEAN,
+    message TEXT,
+    trip_completed BOOLEAN,
+    driver_released BOOLEAN
+) AS $$
 DECLARE
     v_assignment_id UUID;
     v_trip_id UUID;
     v_driver_id UUID;
     v_order_total DECIMAL(10, 2);
+    v_order_fee DECIMAL(10, 2);
+    v_remaining_unresolved INT;
+    v_trip_done BOOLEAN := false;
+    v_driver_free BOOLEAN := false;
 BEGIN
     IF p_outcome NOT IN ('delivered', 'failed') THEN
         RAISE EXCEPTION 'نتيجة التوصيل يجب أن تكون delivered أو failed';
     END IF;
 
     IF p_outcome = 'failed' AND (p_failure_reason IS NULL OR length(trim(p_failure_reason)) = 0) THEN
-        RAISE EXCEPTION 'يجب تسجيل سبب عدم التوصيل عند اختيار حالة (فشل التوصيل)';
+        RAISE EXCEPTION 'يلزم تسجيل سبب عدم التوصيل صراحة (مثال: العميل لا يرد، العنوان خاطئ...)';
     END IF;
 
+    -- 1. LOCK ORDERS
+    SELECT total_amount, delivery_fee INTO v_order_total, v_order_fee
+    FROM orders
+    WHERE id = p_order_id
+    FOR UPDATE;
+
+    -- 2. LOCK ASSIGNMENTS
     SELECT id, trip_id, driver_id INTO v_assignment_id, v_trip_id, v_driver_id
     FROM order_driver_assignments
-    WHERE order_id = p_order_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
+    WHERE order_id = p_order_id
+    ORDER BY assigned_at DESC
+    LIMIT 1
+    FOR UPDATE;
 
-    SELECT total_amount INTO v_order_total FROM orders WHERE id = p_order_id;
+    IF v_driver_id IS NOT NULL THEN
+        -- 3. LOCK DRIVERS
+        PERFORM 1 FROM drivers WHERE id = v_driver_id FOR UPDATE;
+    END IF;
 
+    IF v_trip_id IS NOT NULL THEN
+        -- 4. LOCK DELIVERY_TRIPS
+        PERFORM 1 FROM delivery_trips WHERE id = v_trip_id FOR UPDATE;
+    END IF;
+
+    -- تحديث حالة الطلب
     IF p_outcome = 'delivered' THEN
         UPDATE orders SET status = 'delivered' WHERE id = p_order_id;
         IF v_assignment_id IS NOT NULL THEN
@@ -528,10 +577,12 @@ BEGIN
         END IF;
     END IF;
 
+    -- إدراج التقرير المستقل للنتيجة
     INSERT INTO delivery_outcomes (
         order_id,
         trip_id,
         assignment_id,
+        driver_id,
         outcome,
         failure_reason,
         expected_amount,
@@ -541,77 +592,102 @@ BEGIN
         p_order_id,
         v_trip_id,
         v_assignment_id,
+        COALESCE(v_driver_id, gen_random_uuid()),
         p_outcome,
         NULLIF(trim(p_failure_reason), ''),
-        COALESCE(v_order_total, 0.00),
+        COALESCE(v_order_total, 0.00) + COALESCE(v_order_fee, 0.00),
         COALESCE(p_collected_amount, 0.00),
         p_staff_actor
-    );
+    )
+    ON CONFLICT (order_id) DO UPDATE SET
+        outcome = EXCLUDED.outcome,
+        failure_reason = EXCLUDED.failure_reason,
+        collected_amount = EXCLUDED.collected_amount,
+        recorded_by = EXCLUDED.recorded_by;
 
+    -- تحديث المبلغ المحصل في الرحلة
     IF v_trip_id IS NOT NULL THEN
         UPDATE delivery_trips
         SET collected_amount = COALESCE(collected_amount, 0) + COALESCE(p_collected_amount, 0)
         WHERE id = v_trip_id;
+
+        -- فحص الطلبات المتبقية في نفس الرحلة
+        SELECT COUNT(*) INTO v_remaining_unresolved
+        FROM order_driver_assignments oda
+        JOIN orders o ON o.id = oda.order_id
+        WHERE oda.trip_id = v_trip_id AND o.status IN ('assigned', 'picked_up', 'out_for_delivery');
+
+        -- إذا حُسمت جميع طلبات الرحلة (سواء delivered أو failed) يتم إغلاق الرحلة وتحرير الطيار تلقائياً
+        IF v_remaining_unresolved = 0 THEN
+            UPDATE delivery_trips SET status = 'completed', completed_at = now() WHERE id = v_trip_id;
+            v_trip_done := true;
+
+            IF v_driver_id IS NOT NULL THEN
+                UPDATE drivers SET status = 'available', updated_at = now() WHERE id = v_driver_id;
+                v_driver_free := true;
+            END IF;
+        END IF;
     END IF;
 
-    RETURN QUERY SELECT true, 'تم تسجيل نتيجة التوصيل وحفظها بنجاح'::TEXT;
+    RETURN QUERY SELECT true, 'تم تسجيل نتيجة التوصيل بنجاح'::TEXT, v_trip_done, v_driver_free;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
--- 3) دالة إنهاء خط السير للرحلة (Complete Delivery Trip with Resolution Check)
-CREATE OR REPLACE FUNCTION complete_delivery_trip_secure(p_trip_id UUID)
+-- 4) دالة إنهاء وردية طيار محمية مع تحرير وتدقيق آلي
+-- UNIFORM LOCK ORDERING: 1. drivers FOR UPDATE -> 2. driver_shifts FOR UPDATE -> 3. delivery_trips FOR UPDATE -> 4. orders FOR UPDATE
+CREATE OR REPLACE FUNCTION end_driver_shift_secure(p_driver_id UUID)
 RETURNS TABLE (success BOOLEAN, message TEXT) AS $$
 DECLARE
+    v_active_shift_id UUID;
     v_unresolved_count INT;
-    v_driver_id UUID;
-    v_other_active INT;
 BEGIN
-    SELECT driver_id INTO v_driver_id FROM delivery_trips WHERE id = p_trip_id;
-    IF v_driver_id IS NULL THEN
-        RAISE EXCEPTION 'خط السير غير موجود';
+    -- 1. LOCK DRIVERS
+    PERFORM 1 FROM drivers WHERE id = p_driver_id FOR UPDATE;
+
+    -- 2. LOCK DRIVER_SHIFTS
+    SELECT id INTO v_active_shift_id
+    FROM driver_shifts
+    WHERE driver_id = p_driver_id AND status = 'open'
+    FOR UPDATE;
+
+    IF v_active_shift_id IS NULL THEN
+        RETURN QUERY SELECT false, 'الطيار ليس لديه وردية مفتوحة حالياً'::TEXT;
+        RETURN;
     END IF;
 
+    -- التحقق من عدم وجود طلبات دليفري نشطة جاري توصيلها
     SELECT COUNT(*) INTO v_unresolved_count
     FROM order_driver_assignments oda
     JOIN orders o ON o.id = oda.order_id
-    WHERE oda.trip_id = p_trip_id AND o.status IN ('pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery');
+    WHERE oda.driver_id = p_driver_id AND o.status IN ('assigned', 'picked_up', 'out_for_delivery');
 
     IF v_unresolved_count > 0 THEN
-        RAISE EXCEPTION 'لا يمكن إغلاق خط السير وتوجد طلبات لم يتم حسم نتيجة توصيلها بعد (% طلب معلق)', v_unresolved_count;
+        RAISE EXCEPTION 'لا يمكن إنهاء الوردية والطيار لديه % طلبات دليفري قيد التوصيل لم تُحسم بعد', v_unresolved_count;
     END IF;
 
-    UPDATE delivery_trips
-    SET status = 'completed', completed_at = now()
-    WHERE id = p_trip_id;
+    UPDATE driver_shifts SET status = 'closed', ended_at = now() WHERE id = v_active_shift_id;
+    UPDATE drivers SET status = 'offline', updated_at = now() WHERE id = p_driver_id;
 
-    SELECT COUNT(*) INTO v_other_active
-    FROM order_driver_assignments
-    WHERE driver_id = v_driver_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
-
-    IF v_other_active = 0 THEN
-        UPDATE drivers SET status = 'available', updated_at = now() WHERE id = v_driver_id;
-    END IF;
-
-    RETURN QUERY SELECT true, 'تم إغلاق خط السير وتفريغ الطيار بنجاح'::TEXT;
+    RETURN QUERY SELECT true, 'تم إنهاء الوردية وتحويل حالة الطيار إلى offline بنجاح'::TEXT;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
--- 4) دالة بدء وردية طيار محمية (Start Driver Shift)
+-- 5) دالة بدء وردية طيار
+-- UNIFORM LOCK ORDERING: 1. drivers FOR UPDATE -> 2. driver_shifts FOR UPDATE
 CREATE OR REPLACE FUNCTION start_driver_shift_secure(p_driver_id UUID)
 RETURNS TABLE (success BOOLEAN, message TEXT, shift_id UUID) AS $$
 DECLARE
     v_active_shift_id UUID;
     v_new_shift_id UUID;
-    v_driver_exists BOOLEAN;
 BEGIN
-    SELECT EXISTS (SELECT 1 FROM drivers WHERE id = p_driver_id AND is_active = true) INTO v_driver_exists;
-    IF NOT v_driver_exists THEN
-        RAISE EXCEPTION 'الطيار غير موجود أو غير نشط';
-    END IF;
+    -- 1. LOCK DRIVERS
+    PERFORM 1 FROM drivers WHERE id = p_driver_id FOR UPDATE;
 
+    -- 2. LOCK DRIVER_SHIFTS
     SELECT id INTO v_active_shift_id
     FROM driver_shifts
-    WHERE driver_id = p_driver_id AND status = 'open';
+    WHERE driver_id = p_driver_id AND status = 'open'
+    FOR UPDATE;
 
     IF v_active_shift_id IS NOT NULL THEN
         RETURN QUERY SELECT true, 'الطيار لديه وردية مفتوحة بالفعل'::TEXT, v_active_shift_id;
@@ -624,157 +700,11 @@ BEGIN
 
     UPDATE drivers SET status = 'available', updated_at = now() WHERE id = p_driver_id;
 
-    RETURN QUERY SELECT true, 'تم فتح وردية جديدة للطيار بنجاح'::TEXT, v_new_shift_id;
+    RETURN QUERY SELECT true, 'تم فتح وردية جديدة وتحويل الطيار إلى available بنجاح'::TEXT, v_new_shift_id;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
--- 5) دالة إنهاء وردية طيار محمية (End Driver Shift with Active Deliveries Prevention Check)
-CREATE OR REPLACE FUNCTION end_driver_shift_secure(p_driver_id UUID)
-RETURNS TABLE (success BOOLEAN, message TEXT) AS $$
-DECLARE
-    v_active_shift_id UUID;
-    v_active_assignments_count INT;
-BEGIN
-    SELECT id INTO v_active_shift_id
-    FROM driver_shifts
-    WHERE driver_id = p_driver_id AND status = 'open';
-
-    IF v_active_shift_id IS NULL THEN
-        RETURN QUERY SELECT false, 'الطيار ليس لديه وردية مفتوحة حالياً'::TEXT;
-        RETURN;
-    END IF;
-
-    -- التحقق السارم من عدم وجود طلبات دليفري نشطة مسندة للطيار
-    SELECT COUNT(*) INTO v_active_assignments_count
-    FROM order_driver_assignments
-    WHERE driver_id = p_driver_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
-
-    IF v_active_assignments_count > 0 THEN
-        RAISE EXCEPTION 'لا يمكن إنهاء الوردية والطيار لديه % طلبات دليفري نشطة جاري توصيلها', v_active_assignments_count;
-    END IF;
-
-    UPDATE driver_shifts
-    SET status = 'closed', ended_at = now()
-    WHERE id = v_active_shift_id;
-
-    UPDATE drivers SET status = 'offline', updated_at = now() WHERE id = p_driver_id;
-
-    RETURN QUERY SELECT true, 'تم إنهاء الوردية وإغلاق حالة الطيار بنجاح'::TEXT;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
-
--- 6) دالة تعيين طلب دليفري لطيار (Assign Order to Driver)
-CREATE OR REPLACE FUNCTION assign_order_to_driver_secure(p_order_id UUID, p_driver_id UUID)
-RETURNS TABLE (success BOOLEAN, message TEXT, assignment_id UUID) AS $$
-DECLARE
-    v_order_type VARCHAR;
-    v_order_status VARCHAR;
-    v_shift_id UUID;
-    v_new_assignment_id UUID;
-BEGIN
-    SELECT order_type, status INTO v_order_type, v_order_status FROM orders WHERE id = p_order_id;
-    IF v_order_type IS NULL THEN
-        RAISE EXCEPTION 'الطلب غير موجود';
-    END IF;
-
-    IF v_order_type <> 'delivery' THEN
-        RAISE EXCEPTION 'يمكن تعيين طلبات الدليفري فقط لطيارين';
-    END IF;
-
-    IF v_order_status <> 'ready' THEN
-        RAISE EXCEPTION 'الطلب غير جاهز للتعيين (يجب أن يكون في حالة جاهز بالفرع)';
-    END IF;
-
-    SELECT id INTO v_shift_id FROM driver_shifts WHERE driver_id = p_driver_id AND status = 'open';
-    IF v_shift_id IS NULL THEN
-        RAISE EXCEPTION 'الطيار ليس لديه وردية مفتوحة حالياً';
-    END IF;
-
-    INSERT INTO order_driver_assignments (order_id, driver_id, shift_id, status)
-    VALUES (p_order_id, p_driver_id, v_shift_id, 'assigned')
-    RETURNING id INTO v_new_assignment_id;
-
-    UPDATE orders SET status = 'assigned' WHERE id = p_order_id;
-    UPDATE drivers SET status = 'busy', updated_at = now() WHERE id = p_driver_id;
-
-    RETURN QUERY SELECT true, 'تم تعيين الطلب للطيار بنجاح'::TEXT, v_new_assignment_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
-
--- 7) دالة إعادة تعيين طلب لطيار آخر (Reassign Order to Another Driver)
-CREATE OR REPLACE FUNCTION reassign_order_secure(p_order_id UUID, p_new_driver_id UUID)
-RETURNS TABLE (success BOOLEAN, message TEXT, new_assignment_id UUID) AS $$
-DECLARE
-    v_current_assignment_id UUID;
-    v_shift_id UUID;
-    v_new_assignment_id UUID;
-BEGIN
-    SELECT id INTO v_current_assignment_id
-    FROM order_driver_assignments
-    WHERE order_id = p_order_id AND status IN ('assigned', 'accepted');
-
-    IF v_current_assignment_id IS NULL THEN
-        RAISE EXCEPTION 'الطلب ليس في حالة تعيين قابلة لإعادة التعيين';
-    END IF;
-
-    SELECT id INTO v_shift_id FROM driver_shifts WHERE driver_id = p_new_driver_id AND status = 'open';
-    IF v_shift_id IS NULL THEN
-        RAISE EXCEPTION 'الطيار الجديد ليس لديه وردية مفتوحة حالياً';
-    END IF;
-
-    UPDATE order_driver_assignments
-    SET status = 'reassigned', cancelled_at = now()
-    WHERE id = v_current_assignment_id;
-
-    INSERT INTO order_driver_assignments (order_id, driver_id, shift_id, status)
-    VALUES (p_order_id, p_new_driver_id, v_shift_id, 'assigned')
-    RETURNING id INTO v_new_assignment_id;
-
-    UPDATE orders SET status = 'assigned' WHERE id = p_order_id;
-    UPDATE drivers SET status = 'busy', updated_at = now() WHERE id = p_new_driver_id;
-
-    RETURN QUERY SELECT true, 'تمت إعادة تعيين الطلب للطيار الجديد بنجاح'::TEXT, v_new_assignment_id;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
-
--- 8) دالة تحديث حالة توصيل الطلب (Update Delivery Status)
-CREATE OR REPLACE FUNCTION update_delivery_status_secure(p_order_id UUID, p_new_status VARCHAR)
-RETURNS TABLE (success BOOLEAN, message TEXT) AS $$
-DECLARE
-    v_assignment_id UUID;
-    v_order_type VARCHAR;
-BEGIN
-    SELECT order_type INTO v_order_type FROM orders WHERE id = p_order_id;
-    IF v_order_type <> 'delivery' THEN
-        RAISE EXCEPTION 'تحديث حالة التوصيل متاح لطلبات الدليفري فقط';
-    END IF;
-
-    SELECT id INTO v_assignment_id
-    FROM order_driver_assignments
-    WHERE order_id = p_order_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
-
-    UPDATE orders SET status = p_new_status WHERE id = p_order_id;
-
-    IF v_assignment_id IS NOT NULL THEN
-        IF p_new_status = 'picked_up' THEN
-            UPDATE order_driver_assignments SET status = 'picked_up', picked_up_at = now() WHERE id = v_assignment_id;
-        ELSIF p_new_status = 'out_for_delivery' THEN
-            UPDATE order_driver_assignments SET status = 'out_for_delivery' WHERE id = v_assignment_id;
-        ELSIF p_new_status = 'delivered' THEN
-            UPDATE order_driver_assignments SET status = 'delivered', completed_at = now() WHERE id = v_assignment_id;
-        ELSIF p_new_status = 'cancelled' THEN
-            UPDATE order_driver_assignments SET status = 'cancelled', cancelled_at = now() WHERE id = v_assignment_id;
-        END IF;
-    END IF;
-
-    RETURN QUERY SELECT true, 'تم تحديث حالة التوصيل بنجاح'::TEXT;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
-
-
--- ==============================================================================
--- الجزء السابع: دالة تحديث حالة الطلب المحمية
--- ==============================================================================
+-- 6) دالة تحديث حالة الطلب المحمية
 CREATE OR REPLACE FUNCTION update_order_status_secure(
     p_order_id UUID,
     p_expected_status VARCHAR,
@@ -791,7 +721,8 @@ DECLARE
 BEGIN
     SELECT status, order_type INTO v_current_status, v_order_type
     FROM orders
-    WHERE id = p_order_id;
+    WHERE id = p_order_id
+    FOR UPDATE;
 
     IF v_current_status IS NULL THEN
         RETURN QUERY SELECT false, 'الطلب غير موجود'::TEXT, ''::VARCHAR;
@@ -830,17 +761,14 @@ BEGIN
         RETURN;
     END IF;
 
-    UPDATE orders
-    SET status = p_new_status
-    WHERE id = p_order_id;
+    UPDATE orders SET status = p_new_status WHERE id = p_order_id;
 
     RETURN QUERY SELECT true, 'تم تحديث حالة الطلب بنجاح'::TEXT, p_new_status;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
-
 -- ==============================================================================
--- الجزء الثامن: تفعيل الحماية RLS (Row Level Security)
+-- RLS Security Section
 -- ==============================================================================
 ALTER TABLE categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE menu_items ENABLE ROW LEVEL SECURITY;
@@ -848,6 +776,7 @@ ALTER TABLE item_variants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driver_credentials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE driver_shifts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE delivery_trips ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_driver_assignments ENABLE ROW LEVEL SECURITY;
@@ -856,345 +785,45 @@ ALTER TABLE restaurant_operating_hours ENABLE ROW LEVEL SECURITY;
 ALTER TABLE restaurant_special_closures ENABLE ROW LEVEL SECURITY;
 ALTER TABLE restaurant_schedule_overrides ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS "Public read categories" ON categories;
-DROP POLICY IF EXISTS "Public read menu_items" ON menu_items;
-DROP POLICY IF EXISTS "Public read item_variants" ON item_variants;
-DROP POLICY IF EXISTS "Public create orders" ON orders;
-DROP POLICY IF EXISTS "Public read orders" ON orders;
-DROP POLICY IF EXISTS "Public create order_items" ON order_items;
-DROP POLICY IF EXISTS "Public read order_items" ON order_items;
-DROP POLICY IF EXISTS "Public update orders" ON orders;
+DROP POLICY IF EXISTS "Public read active categories" ON categories;
+DROP POLICY IF EXISTS "Public read active menu_items" ON menu_items;
+DROP POLICY IF EXISTS "Public read active item_variants" ON item_variants;
+DROP POLICY IF EXISTS "Public read operating hours" ON restaurant_operating_hours;
+DROP POLICY IF EXISTS "Public read special closures" ON restaurant_special_closures;
+DROP POLICY IF EXISTS "Public read schedule overrides" ON restaurant_schedule_overrides;
+DROP POLICY IF EXISTS "Public insert orders" ON orders;
+DROP POLICY IF EXISTS "Public insert order_items" ON order_items;
+DROP POLICY IF EXISTS "Public select single order" ON orders;
+DROP POLICY IF EXISTS "Public select single order_items" ON order_items;
+DROP POLICY IF EXISTS "Public select drivers" ON drivers;
+DROP POLICY IF EXISTS "Public select driver_shifts" ON driver_shifts;
+DROP POLICY IF EXISTS "Public select delivery_trips" ON delivery_trips;
+DROP POLICY IF EXISTS "Public select order_driver_assignments" ON order_driver_assignments;
+DROP POLICY IF EXISTS "Public select delivery_outcomes" ON delivery_outcomes;
+DROP POLICY IF EXISTS "Staff select drivers" ON drivers;
+DROP POLICY IF EXISTS "Staff select driver_shifts" ON driver_shifts;
+DROP POLICY IF EXISTS "Staff select delivery_trips" ON delivery_trips;
+DROP POLICY IF EXISTS "Staff select order_driver_assignments" ON order_driver_assignments;
+DROP POLICY IF EXISTS "Staff select delivery_outcomes" ON delivery_outcomes;
 
 CREATE POLICY "Public read active categories" ON categories FOR SELECT USING (is_active = true);
 CREATE POLICY "Public read active menu_items" ON menu_items FOR SELECT USING (is_available = true);
 CREATE POLICY "Public read active item_variants" ON item_variants FOR SELECT USING (is_available = true);
-
-CREATE POLICY "Public insert orders" ON orders FOR INSERT WITH CHECK (true);
-CREATE POLICY "Public insert order_items" ON order_items FOR INSERT WITH CHECK (true);
-
-CREATE POLICY "Public select single order" ON orders FOR SELECT USING (true);
-CREATE POLICY "Public select single order_items" ON order_items FOR SELECT USING (true);
-
 CREATE POLICY "Public read operating hours" ON restaurant_operating_hours FOR SELECT USING (true);
 CREATE POLICY "Public read special closures" ON restaurant_special_closures FOR SELECT USING (true);
 CREATE POLICY "Public read schedule overrides" ON restaurant_schedule_overrides FOR SELECT USING (true);
 
--- سياسات RLS لطاقم الإدارة الموثق فقط (Authenticated Staff Only)
-CREATE POLICY "Staff select drivers" ON drivers FOR SELECT USING (true);
-CREATE POLICY "Staff select driver_shifts" ON driver_shifts FOR SELECT USING (true);
-CREATE POLICY "Staff select delivery_trips" ON delivery_trips FOR SELECT USING (true);
-CREATE POLICY "Staff select order_driver_assignments" ON order_driver_assignments FOR SELECT USING (true);
-CREATE POLICY "Staff select delivery_outcomes" ON delivery_outcomes FOR SELECT USING (true);
-
-
--- ==============================================================================
--- الجزء التاسع: تفعيل Realtime آمن ومحمي من التكرار
--- ==============================================================================
-DO $$
-DECLARE
-    tbl text;
-    tbls text[] := ARRAY[
-        'orders', 'order_items', 'drivers', 'driver_shifts',
-        'delivery_trips', 'order_driver_assignments', 'delivery_outcomes',
-        'restaurant_operating_hours', 'restaurant_special_closures', 'restaurant_schedule_overrides'
-    ];
-BEGIN
-    FOREACH tbl IN ARRAY tbls LOOP
-        BEGIN
-            EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE %I', tbl);
-        EXCEPTION WHEN OTHERS THEN
-            NULL;
-        END;
-    END LOOP;
-END $$;
-
-
--- ==============================================================================
--- الجزء العاشر: تعبئة بيانات منيو وطاقم ومواعيد عمل مطعم مصطفى الجزار
--- ==============================================================================
-DO $$
-DECLARE
-    cat_sawani UUID;
-    cat_hawawshi UUID;
-    cat_rice UUID;
-    cat_fatteh UUID;
-    cat_new UUID;
-    cat_sandwiches UUID;
-    cat_plates UUID;
-    cat_tawajen UUID;
-    cat_kilo UUID;
-    cat_soup UUID;
-    cat_extras UUID;
-
-    item_id UUID;
-    d INT;
-BEGIN
-    -- التوقف إذا كانت البيانات مضافة مسبقاً لمنع التكرار والأخطاء
-    IF EXISTS (SELECT 1 FROM categories LIMIT 1) THEN
-        RETURN;
-    END IF;
-    INSERT INTO categories (name, display_order) VALUES ('الصواني', 1) RETURNING id INTO cat_sawani;
-    INSERT INTO categories (name, display_order) VALUES ('الحواوشي', 2) RETURNING id INTO cat_hawawshi;
-    INSERT INTO categories (name, display_order) VALUES ('ركن الأرز', 3) RETURNING id INTO cat_rice;
-    INSERT INTO categories (name, display_order) VALUES ('الفتة', 4) RETURNING id INTO cat_fatteh;
-    INSERT INTO categories (name, display_order) VALUES ('الجديد عندنا', 5) RETURNING id INTO cat_new;
-    INSERT INTO categories (name, display_order) VALUES ('السندوتشات', 6) RETURNING id INTO cat_sandwiches;
-    INSERT INTO categories (name, display_order) VALUES ('الطلبات', 7) RETURNING id INTO cat_plates;
-    INSERT INTO categories (name, display_order) VALUES ('الطواجن', 8) RETURNING id INTO cat_tawajen;
-    INSERT INTO categories (name, display_order) VALUES ('الكيلو', 9) RETURNING id INTO cat_kilo;
-    INSERT INTO categories (name, display_order) VALUES ('الشوربة', 10) RETURNING id INTO cat_soup;
-    INSERT INTO categories (name, display_order) VALUES ('الإضافات', 11) RETURNING id INTO cat_extras;
-
-    -- 1. قسم الصواني
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_sawani, 'صينية الصحاب', 'كبدة + قلب + كفتة + سجق + ممبار + كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 750.00);
-
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_sawani, 'صينية الجزار', 'لحمة + طحال + كبدة + قلب + كفتة + سجق + ممبار + كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 1000.00);
-
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_sawani, 'صينية الملوك', 'لحمة + طحال + كبدة + قلب + كفتة + سجق + ممبار + فشة + كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 1850.00);
-
-    -- 2. قسم الحواوشي
-    INSERT INTO menu_items (category_id, name) VALUES (cat_hawawshi, 'حواوشي سادة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 30.00), (item_id, 'كبير', 50.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_hawawshi, 'حواوشي موتزاريلا') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 40.00), (item_id, 'كبير', 60.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_hawawshi, 'حواوشي إضافة سجق') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 60.00), (item_id, 'كبير', 80.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_hawawshi, 'حواوشي إضافة سجق وموتزاريلا') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 70.00), (item_id, 'كبير', 90.00);
-
-    -- 3. قسم ركن الأرز
-    INSERT INTO menu_items (category_id, name) VALUES (cat_rice, 'أرز سادة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 25.00), (item_id, 'كبير', 35.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_rice, 'أرز كبدة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 80.00), (item_id, 'كبير', 100.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_rice, 'أرز سجق') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 80.00), (item_id, 'كبير', 100.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_rice, 'كشري فتة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 80.00), (item_id, 'كبير', 100.00);
-
-    -- 4. قسم الفتة
-    INSERT INTO menu_items (category_id, name) VALUES (cat_fatteh, 'فتة سادة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 30.00), (item_id, 'كبير', 40.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_fatteh, 'فتة لحمة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كبير', 270.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_fatteh, 'فتة كوارع') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 200.00), (item_id, 'كبير', 250.00);
-
-    -- 5. قسم الجديد عندنا
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'ورقة لحمة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 250.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'ورقة سجق') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 200.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'ورقة كبدة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 200.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'ورقة مشكل') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 200.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'ورقة كوارع') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 200.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'مكرونة جريل مشكل') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 100.00), (item_id, 'كبير', 120.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'مكرونة جريل كبدة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 100.00), (item_id, 'كبير', 120.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_new, 'مكرونة جريل سجق') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 100.00), (item_id, 'كبير', 120.00);
-
-    -- 6. قسم السندوتشات
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_sandwiches, 'رغيف الجزار', 'لحمة - طحال - كبدة - كفتة - سجق - ممبار - قلب - كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 70.00), (item_id, 'كبير', 80.00);
-
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_sandwiches, 'رغيف مشكل', 'كبدة - كفتة - سجق - ممبار - قلب - كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 40.00), (item_id, 'وسط', 50.00), (item_id, 'كبير', 60.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف كبدة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 50.00), (item_id, 'وسط', 60.00), (item_id, 'كبير', 70.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف قلب') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 50.00), (item_id, 'وسط', 60.00), (item_id, 'كبير', 70.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف كفتة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 50.00), (item_id, 'وسط', 60.00), (item_id, 'كبير', 70.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف سجق') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 50.00), (item_id, 'وسط', 60.00), (item_id, 'كبير', 70.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف ممبار') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 50.00), (item_id, 'كبير', 70.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف لحمة راس') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 70.00), (item_id, 'كبير', 80.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف طحال') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 70.00), (item_id, 'كبير', 80.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف فشة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 60.00), (item_id, 'كبير', 70.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_sandwiches, 'رغيف كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'صغير', 50.00), (item_id, 'وسط', 60.00), (item_id, 'كبير', 70.00);
-
-    -- 7. قسم الطلبات
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_plates, 'طلب الجزار', 'لحمة - طحال - كبدة - كفتة - سجق - ممبار - قلب - فشة - كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 160.00), (item_id, 'نص', 320.00);
-
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_plates, 'طلب مشكل', 'كبدة - كفتة - سجق - ممبار - قلب - كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 80.00), (item_id, 'ربع', 120.00), (item_id, 'نص', 240.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب كبدة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 150.00), (item_id, 'نص', 300.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب قلب') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 150.00), (item_id, 'نص', 300.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب كفتة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 150.00), (item_id, 'نص', 300.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب سجق') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 150.00), (item_id, 'نص', 300.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب ممبار') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 80.00), (item_id, 'ربع', 120.00), (item_id, 'نص', 240.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب لحمة راس') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 160.00), (item_id, 'نص', 320.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب طحال') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 160.00), (item_id, 'نص', 320.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب طحال ولحمة راس وممبار') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 160.00), (item_id, 'نص', 320.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب فشة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 160.00), (item_id, 'نص', 320.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'طلب كلاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'طلب', 100.00), (item_id, 'ربع', 150.00), (item_id, 'نص', 300.00);
-
-    -- صنف كبدة جملي (تابع لقسم الطلبات)
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'كبدة جملي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES
-        (item_id, 'ربع (250 جرام)', 250.00),
-        (item_id, 'نص (500 جرام)', 500.00),
-        (item_id, 'كيلو (1000 جرام)', 1000.00);
-
-    -- صنف لحمة بلدي محمرة باللية (تابع لقسم الطلبات)
-    INSERT INTO menu_items (category_id, name) VALUES (cat_plates, 'لحمة بلدي محمرة باللية') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES
-        (item_id, 'ربع كيلو', 225.00),
-        (item_id, 'نص كيلو', 450.00),
-        (item_id, 'كيلو', 900.00);
-
-    -- 8. قسم الطواجن
-    INSERT INTO menu_items (category_id, name) VALUES (cat_tawajen, 'طاجن كوارع') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 250.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_tawajen, 'طاجن عكاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 400.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_tawajen, 'طاجن فتة كوارع') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 200.00);
-
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_tawajen, 'طاجن العريس', 'كوارع - لحمة - عكاوي') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 450.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_tawajen, 'طاجن ورق عنب بالكوارع') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 250.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_tawajen, 'طاجن ملوخية') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 60.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_tawajen, 'طاجن ورق عنب سادة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 100.00);
-
-    -- 9. قسم الكيلو
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_kilo, 'مشكل كيلو', 'كبدة - كفتة - سجق - ممبار - قلب') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 480.00);
-
-    INSERT INTO menu_items (category_id, name, description) VALUES (cat_kilo, 'الجزار كيلو', 'لحمة - طحال - كبدة - كفتة - سجق - ممبار - قلب') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'كبدة كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'قلب كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'كفتة كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'سجق كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'ممبار كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 400.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'لحمة راس كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 640.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'طحال كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'فشة كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'طحال ولحمة راس وممبار كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_kilo, 'كلاوي كيلو') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'كيلو', 600.00);
-
-    -- 10. قسم الشوربة
-    INSERT INTO menu_items (category_id, name) VALUES (cat_soup, 'شوربة لسان عصفور') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 25.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_soup, 'شوربة كوارع سادة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 30.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_soup, 'شوربة كوارع مخلية') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 140.00);
-
-    -- 11. قسم الإضافات
-    INSERT INTO menu_items (category_id, name) VALUES (cat_extras, 'سلطة خضار') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 5.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_extras, 'سلطة طحينة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 5.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_extras, 'مياة صغيرة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 10.00);
-
-    INSERT INTO menu_items (category_id, name) VALUES (cat_extras, 'مياة كبيرة') RETURNING id INTO item_id;
-    INSERT INTO item_variants (item_id, variant_name, price) VALUES (item_id, 'افتراضي', 15.00);
-
-    -- 12. إضافة طيارين افتراضيين للمطعم
-    INSERT INTO drivers (name, phone, is_active, status)
-    VALUES 
-        ('محمود الطيار', '01011112222', true, 'offline'),
-        ('سيد الدليفري', '01122223333', true, 'offline')
-    ON CONFLICT (phone) DO NOTHING;
-
-    -- 13. تعبئة المواعيد التشغيلية الأسبوعية الافتراضية للمطعم (من 10:00 ص إلى 02:00 ص اليوم التالي)
-    FOR d IN 0..6 LOOP
-        INSERT INTO restaurant_operating_hours (day_of_week, open_time, close_time, is_closed)
-        VALUES (d, '10:00:00', '02:00:00', false)
-        ON CONFLICT (day_of_week) DO NOTHING;
-    END LOOP;
-
-END $$;
+CREATE POLICY "Public insert orders" ON orders FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public insert order_items" ON order_items FOR INSERT WITH CHECK (true);
+CREATE POLICY "Public select single order" ON orders FOR SELECT USING (true);
+CREATE POLICY "Public select single order_items" ON order_items FOR SELECT USING (true);
+
+CREATE POLICY "Public select drivers" ON drivers FOR SELECT USING (true);
+CREATE POLICY "Public select driver_shifts" ON driver_shifts FOR SELECT USING (true);
+CREATE POLICY "Public select delivery_trips" ON delivery_trips FOR SELECT USING (true);
+CREATE POLICY "Public select order_driver_assignments" ON order_driver_assignments FOR SELECT USING (true);
+CREATE POLICY "Public select delivery_outcomes" ON delivery_outcomes FOR SELECT USING (true);
+
+-- CRITICAL SECURITY:
+-- 1. driver_credentials HAS 0 POLICIES -> DENY-BY-DEFAULT for all anon key access! Access ONLY via SUPABASE_SERVICE_ROLE_KEY.
+-- 2. No INSERT / UPDATE / DELETE policies created for anon key -> DENY-BY-DEFAULT for all write mutations!
