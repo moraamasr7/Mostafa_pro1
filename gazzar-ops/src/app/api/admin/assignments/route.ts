@@ -122,28 +122,30 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('update_delivery_status_secure', {
-        p_order_id: order_id,
-        p_new_status: new_status,
-      })
-
-      if (rpcErr) {
-        console.error('خطأ RPC تحديث حالة التوصيل:', rpcErr)
-        return NextResponse.json(
-          { error: rpcErr.message || 'تعذر تحديث حالة التوصيل' },
-          { status: 400 }
-        )
-      }
-
-      if (rpcData && rpcData.length > 0) {
-        const res = rpcData[0]
-        if (!res.success) {
-          return NextResponse.json({ error: res.message }, { status: 400 })
+      if (new_status === 'delivered' || new_status === 'failed') {
+        const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('record_delivery_outcome_secure', {
+          p_order_id: order_id,
+          p_outcome: new_status,
+          p_failure_reason: null,
+          p_collected_amount: 0.00,
+          p_staff_actor: 'admin_assignments',
+        })
+        if (rpcErr) return NextResponse.json({ error: rpcErr.message }, { status: 400 })
+        if (rpcData && rpcData.length > 0 && !rpcData[0].success) {
+          return NextResponse.json({ error: rpcData[0].message }, { status: 400 })
         }
-        return NextResponse.json(
-          { success: true, message: res.message },
-          { status: 200 }
-        )
+        return NextResponse.json({ success: true, message: rpcData?.[0]?.message || 'تم التحديث بنجاح' }, { status: 200 })
+      } else {
+        const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('update_order_status_secure', {
+          p_order_id: order_id,
+          p_expected_status: null,
+          p_new_status: new_status,
+        })
+        if (rpcErr) return NextResponse.json({ error: rpcErr.message }, { status: 400 })
+        if (rpcData && rpcData.length > 0 && !rpcData[0].success) {
+          return NextResponse.json({ error: rpcData[0].message }, { status: 400 })
+        }
+        return NextResponse.json({ success: true, message: rpcData?.[0]?.message || 'تم التحديث بنجاح' }, { status: 200 })
       }
     }
 

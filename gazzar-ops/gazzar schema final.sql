@@ -767,6 +767,31 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
+-- 6.1) دالة توافقية لدعم الاستدعاء القديم: update_delivery_status_secure
+DROP FUNCTION IF EXISTS update_delivery_status_secure(uuid, varchar) CASCADE;
+DROP FUNCTION IF EXISTS update_delivery_status_secure(varchar, uuid) CASCADE;
+
+CREATE OR REPLACE FUNCTION update_delivery_status_secure(
+    p_order_id UUID,
+    p_new_status VARCHAR
+)
+RETURNS TABLE (
+    success BOOLEAN,
+    message TEXT
+) AS $$
+BEGIN
+    IF p_new_status IN ('delivered', 'failed') THEN
+        RETURN QUERY
+        SELECT r.success, r.message
+        FROM record_delivery_outcome_secure(p_order_id, p_new_status, NULL, 0.00, 'staff') r;
+    ELSE
+        RETURN QUERY
+        SELECT u.success, u.message
+        FROM update_order_status_secure(p_order_id, NULL, p_new_status) u;
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
 -- ==============================================================================
 -- RLS Security Section
 -- ==============================================================================
