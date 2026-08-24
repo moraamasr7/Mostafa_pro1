@@ -55,6 +55,11 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
+-- تحديث وتحديث قيد الحالات المسموحة في جدول الطلبات لمنع تعارض النسخ القديمة
+ALTER TABLE orders DROP CONSTRAINT IF EXISTS orders_status_check;
+ALTER TABLE orders ADD CONSTRAINT orders_status_check 
+    CHECK (status IN ('pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery', 'delivered', 'completed', 'cancelled', 'failed'));
+
 -- إكمال الحقول في حالة وجود الجدول مسبقاً من نسخة سابقة
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS tracking_token UUID DEFAULT gen_random_uuid() NOT NULL;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
