@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 6) جدول طيارين الدليفري العام (Drivers - العامة بدون بيانات الاعتماد أو الهواتف)
+-- 6) جدول طيارين الدليفري العام (Drivers)
 CREATE TABLE IF NOT EXISTS drivers (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -158,6 +158,248 @@ CREATE TABLE IF NOT EXISTS restaurant_schedule_overrides (
     reason TEXT,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- ==============================================================================
+-- دوال الـ RPC المحمية (Protected RPC Stored Functions)
+-- ==============================================================================
+
+-- 1) دالة تحديث حالة الطلب المحمية
+CREATE OR REPLACE FUNCTION update_order_status_secure(
+    p_order_id UUID,
+    p_expected_status VARCHAR,
+    p_new_status VARCHAR
+)
+RETURNS TABLE (
+    success BOOLEAN,
+    message TEXT,
+    updated_status VARCHAR
+) AS $$
+DECLARE
+    v_current_status VARCHAR;
+    v_order_type VARCHAR;
+BEGIN
+    SELECT status, order_type INTO v_current_status, v_order_type
+    FROM orders
+    WHERE id = p_order_id;
+
+    IF v_current_status IS NULL THEN
+        RETURN QUERY SELECT false, 'الطلب غير موجود'::TEXT, ''::VARCHAR;
+        RETURN;
+    END IF;
+
+    IF p_expected_status IS NOT NULL AND v_current_status <> p_expected_status THEN
+        RETURN QUERY SELECT false, ('تم تحديث الطلب بواسطة موظف آخر إلى حالة: ' || v_current_status)::TEXT, v_current_status;
+        RETURN;
+    END IF;
+
+    IF v_current_status = 'pending' AND p_new_status IN ('processing', 'cancelled') THEN
+        -- مسموح
+    ELSIF v_current_status = 'processing' AND p_new_status IN ('ready', 'completed', 'cancelled') THEN
+        -- مسموح
+    ELSIF v_current_status = 'ready' AND p_new_status IN ('completed', 'assigned', 'cancelled') THEN
+        -- مسموح
+    ELSIF v_current_status = 'assigned' AND p_new_status IN ('picked_up', 'cancelled') THEN
+        -- مسموح
+    ELSIF v_current_status = 'picked_up' AND p_new_status IN ('out_for_delivery') THEN
+        -- مسموح
+    ELSIF v_current_status = 'out_for_delivery' AND p_new_status IN ('delivered', 'failed') THEN
+        -- مسموح
+    ELSE
+        RETURN QUERY SELECT false, ('تغيير الحالة غير مسموح من ' || v_current_status || ' إلى ' || p_new_status)::TEXT, v_current_status;
+        RETURN;
+    END IF;
+
+    IF v_order_type = 'takeaway' AND p_new_status IN ('assigned', 'picked_up', 'out_for_delivery', 'delivered', 'failed') THEN
+        RETURN QUERY SELECT false, 'طلب الاستلام من الفرع لا يمكن تحويله لحالات الطيار'::TEXT, v_current_status;
+        RETURN;
+    END IF;
+
+    IF v_order_type = 'delivery' AND p_new_status = 'completed' THEN
+        RETURN QUERY SELECT false, 'طلب الدليفري ينتقل إلى حالة (delivered) عند التسليم وليس (completed)'::TEXT, v_current_status;
+        RETURN;
+    END IF;
+
+    UPDATE orders
+    SET status = p_new_status
+    WHERE id = p_order_id;
+
+    RETURN QUERY SELECT true, 'تم تحديث حالة الطلب بنجاح'::TEXT, p_new_status;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- 2) دالة تعيين طلب دليفري لطيار
+CREATE OR REPLACE FUNCTION assign_order_to_driver_secure(p_order_id UUID, p_driver_id UUID)
+RETURNS TABLE (success BOOLEAN, message TEXT, assignment_id UUID) AS $$
+DECLARE
+    v_order_type VARCHAR;
+    v_order_status VARCHAR;
+    v_shift_id UUID;
+    v_new_assignment_id UUID;
+BEGIN
+    SELECT order_type, status INTO v_order_type, v_order_status FROM orders WHERE id = p_order_id;
+    IF v_order_type IS NULL THEN
+        RAISE EXCEPTION 'الطلب غير موجود';
+    END IF;
+
+    IF v_order_type <> 'delivery' THEN
+        RAISE EXCEPTION 'يمكن تعيين طلبات الدليفري فقط لطيارين';
+    END IF;
+
+    IF v_order_status <> 'ready' THEN
+        RAISE EXCEPTION 'الطلب غير جاهز للتعيين (يجب أن يكون في حالة جاهز بالفرع)';
+    END IF;
+
+    SELECT id INTO v_shift_id FROM driver_shifts WHERE driver_id = p_driver_id AND status = 'open';
+    IF v_shift_id IS NULL THEN
+        RAISE EXCEPTION 'الطيار ليس لديه وردية مفتوحة حالياً';
+    END IF;
+
+    INSERT INTO order_driver_assignments (order_id, driver_id, shift_id, status)
+    VALUES (p_order_id, p_driver_id, v_shift_id, 'assigned')
+    RETURNING id INTO v_new_assignment_id;
+
+    UPDATE orders SET status = 'assigned' WHERE id = p_order_id;
+    UPDATE drivers SET status = 'busy', updated_at = now() WHERE id = p_driver_id;
+
+    RETURN QUERY SELECT true, 'تم تعيين الطلب للطيار بنجاح'::TEXT, v_new_assignment_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- 3) دالة إعادة تعيين طلب لطيار آخر
+CREATE OR REPLACE FUNCTION reassign_order_secure(p_order_id UUID, p_new_driver_id UUID)
+RETURNS TABLE (success BOOLEAN, message TEXT, new_assignment_id UUID) AS $$
+DECLARE
+    v_current_assignment_id UUID;
+    v_shift_id UUID;
+    v_new_assignment_id UUID;
+BEGIN
+    SELECT id INTO v_current_assignment_id
+    FROM order_driver_assignments
+    WHERE order_id = p_order_id AND status IN ('assigned', 'accepted');
+
+    IF v_current_assignment_id IS NULL THEN
+        RAISE EXCEPTION 'الطلب ليس في حالة تعيين قابلة لإعادة التعيين';
+    END IF;
+
+    SELECT id INTO v_shift_id FROM driver_shifts WHERE driver_id = p_new_driver_id AND status = 'open';
+    IF v_shift_id IS NULL THEN
+        RAISE EXCEPTION 'الطيار الجديد ليس لديه وردية مفتوحة حالياً';
+    END IF;
+
+    UPDATE order_driver_assignments
+    SET status = 'reassigned'
+    WHERE id = v_current_assignment_id;
+
+    INSERT INTO order_driver_assignments (order_id, driver_id, shift_id, status)
+    VALUES (p_order_id, p_new_driver_id, v_shift_id, 'assigned')
+    RETURNING id INTO v_new_assignment_id;
+
+    UPDATE orders SET status = 'assigned' WHERE id = p_order_id;
+    UPDATE drivers SET status = 'busy', updated_at = now() WHERE id = p_new_driver_id;
+
+    RETURN QUERY SELECT true, 'تمت إعادة تعيين الطلب للطيار الجديد بنجاح'::TEXT, v_new_assignment_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- 4) دالة تحديث حالة توصيل الطلب
+CREATE OR REPLACE FUNCTION update_delivery_status_secure(p_order_id UUID, p_new_status VARCHAR)
+RETURNS TABLE (success BOOLEAN, message TEXT) AS $$
+DECLARE
+    v_assignment_id UUID;
+    v_order_type VARCHAR;
+BEGIN
+    SELECT order_type INTO v_order_type FROM orders WHERE id = p_order_id;
+    IF v_order_type <> 'delivery' THEN
+        RAISE EXCEPTION 'تحديث حالة التوصيل متاح لطلبات الدليفري فقط';
+    END IF;
+
+    SELECT id INTO v_assignment_id
+    FROM order_driver_assignments
+    WHERE order_id = p_order_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
+
+    UPDATE orders SET status = p_new_status WHERE id = p_order_id;
+
+    IF v_assignment_id IS NOT NULL THEN
+        IF p_new_status = 'picked_up' THEN
+            UPDATE order_driver_assignments SET status = 'picked_up' WHERE id = v_assignment_id;
+        ELSIF p_new_status = 'out_for_delivery' THEN
+            UPDATE order_driver_assignments SET status = 'out_for_delivery' WHERE id = v_assignment_id;
+        ELSIF p_new_status = 'delivered' THEN
+            UPDATE order_driver_assignments SET status = 'delivered' WHERE id = v_assignment_id;
+        ELSIF p_new_status = 'cancelled' THEN
+            UPDATE order_driver_assignments SET status = 'cancelled' WHERE id = v_assignment_id;
+        END IF;
+    END IF;
+
+    RETURN QUERY SELECT true, 'تم تحديث حالة التوصيل بنجاح'::TEXT;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- 5) دالة بدء وردية طيار
+CREATE OR REPLACE FUNCTION start_driver_shift_secure(p_driver_id UUID)
+RETURNS TABLE (success BOOLEAN, message TEXT, shift_id UUID) AS $$
+DECLARE
+    v_active_shift_id UUID;
+    v_new_shift_id UUID;
+    v_driver_exists BOOLEAN;
+BEGIN
+    SELECT EXISTS (SELECT 1 FROM drivers WHERE id = p_driver_id AND is_active = true) INTO v_driver_exists;
+    IF NOT v_driver_exists THEN
+        RAISE EXCEPTION 'الطيار غير موجود أو غير نشط';
+    END IF;
+
+    SELECT id INTO v_active_shift_id
+    FROM driver_shifts
+    WHERE driver_id = p_driver_id AND status = 'open';
+
+    IF v_active_shift_id IS NOT NULL THEN
+        RETURN QUERY SELECT true, 'الطيار لديه وردية مفتوحة بالفعل'::TEXT, v_active_shift_id;
+        RETURN;
+    END IF;
+
+    INSERT INTO driver_shifts (driver_id, status)
+    VALUES (p_driver_id, 'open')
+    RETURNING id INTO v_new_shift_id;
+
+    UPDATE drivers SET status = 'available', updated_at = now() WHERE id = p_driver_id;
+
+    RETURN QUERY SELECT true, 'تم فتح وردية جديدة للطيار بنجاح'::TEXT, v_new_shift_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+-- 6) دالة إنهاء وردية طيار
+CREATE OR REPLACE FUNCTION end_driver_shift_secure(p_driver_id UUID)
+RETURNS TABLE (success BOOLEAN, message TEXT) AS $$
+DECLARE
+    v_active_shift_id UUID;
+    v_active_assignments_count INT;
+BEGIN
+    SELECT id INTO v_active_shift_id
+    FROM driver_shifts
+    WHERE driver_id = p_driver_id AND status = 'open';
+
+    IF v_active_shift_id IS NULL THEN
+        RETURN QUERY SELECT false, 'الطيار ليس لديه وردية مفتوحة حالياً'::TEXT;
+        RETURN;
+    END IF;
+
+    SELECT COUNT(*) INTO v_active_assignments_count
+    FROM order_driver_assignments
+    WHERE driver_id = p_driver_id AND status IN ('assigned', 'accepted', 'picked_up', 'out_for_delivery');
+
+    IF v_active_assignments_count > 0 THEN
+        RAISE EXCEPTION 'لا يمكن إنهاء الوردية والطيار لديه % طلبات دليفري نشطة جاري توصيلها', v_active_assignments_count;
+    END IF;
+
+    UPDATE driver_shifts
+    SET status = 'closed', ended_at = now()
+    WHERE id = v_active_shift_id;
+
+    UPDATE drivers SET status = 'offline', updated_at = now() WHERE id = p_driver_id;
+
+    RETURN QUERY SELECT true, 'تم إنهاء الوردية وإغلاق حالة الطيار بنجاح'::TEXT;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
 -- ==============================================================================
 -- RLS Security Section
