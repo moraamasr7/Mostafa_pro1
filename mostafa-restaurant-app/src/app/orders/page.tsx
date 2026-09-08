@@ -65,6 +65,8 @@ export default function AdminOrdersPage() {
   const [selectedDriverId, setSelectedDriverId] = useState<string>('')
   const [selectedOrderForFailure, setSelectedOrderForFailure] = useState<Order | null>(null)
   const [failureReason, setFailureReason] = useState<string>('العميل لا يرد على الهاتف')
+  const [customFailureText, setCustomFailureText] = useState<string>('')
+  const [isOnline, setIsOnline] = useState<boolean>(true)
 
   const [newDriverName, setNewDriverName] = useState('')
   const [newDriverPhone, setNewDriverPhone] = useState('')
@@ -109,6 +111,20 @@ export default function AdminOrdersPage() {
     }
     load()
 
+    const handleOnline = () => {
+      setIsOnline(true)
+      fetchOrdersAndDrivers(activeTab)
+    }
+    const handleOffline = () => {
+      setIsOnline(false)
+    }
+
+    if (typeof window !== 'undefined') {
+      setIsOnline(navigator.onLine)
+      window.addEventListener('online', handleOnline)
+      window.addEventListener('offline', handleOffline)
+    }
+
     const ordersChannel = supabase
       .channel('admin-realtime-all')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
@@ -123,10 +139,17 @@ export default function AdminOrdersPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => {
         fetchOrdersAndDrivers(activeTab)
       })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
+        fetchOrdersAndDrivers(activeTab)
+      })
       .subscribe()
 
     return () => {
       supabase.removeChannel(ordersChannel)
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline)
+        window.removeEventListener('offline', handleOffline)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab])
@@ -341,6 +364,10 @@ export default function AdminOrdersPage() {
     setUpdatingOrderId(selectedOrderForFailure.id)
     setActionError(null)
 
+    const finalReason = failureReason === 'سبب آخر'
+      ? (customFailureText.trim() || 'سبب آخر لم يُحدد')
+      : failureReason
+
     try {
       const res = await fetch('/api/admin/status', {
         method: 'POST',
@@ -348,7 +375,7 @@ export default function AdminOrdersPage() {
         body: JSON.stringify({
           order_id: selectedOrderForFailure.id,
           new_status: 'failed',
-          failure_reason: failureReason,
+          failure_reason: finalReason,
         }),
       })
 
@@ -356,6 +383,8 @@ export default function AdminOrdersPage() {
       if (res.ok) {
         setActionSuccess('تم تسجيل حالة فشل التوصيل والسبب بسوبابيز بنجاح')
         setSelectedOrderForFailure(null)
+        setCustomFailureText('')
+        setFailureReason('العميل لا يرد على الهاتف')
         fetchOrdersAndDrivers(activeTab)
       } else {
         setActionError(data.error || 'تعذر تسجيل فشل التوصيل')
@@ -422,6 +451,12 @@ export default function AdminOrdersPage() {
   return (
     <div className="min-h-screen bg-gray-100 text-gray-900 flex flex-col font-sans">
       <OpsNavbar title="لوحة استقبال الطلبات والطيارين" subtitle="إدارة وتحديث الطلبات لحظياً" />
+
+      {!isOnline && (
+        <div className="bg-amber-500 text-black px-4 py-2 text-center text-xs font-black animate-pulse flex items-center justify-center gap-2">
+          <span>⚠️ تم فقدان الاتصال بالإنترنت - يتم العمل في وضع عدم الاتصال حالياً (سيتم المزامنة تلقائياً فور عودة الشبكة)</span>
+        </div>
+      )}
 
       <div className="bg-amber-950/10 border-b border-amber-900/20 px-4 py-2">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
@@ -1062,10 +1097,12 @@ export default function AdminOrdersPage() {
                 {failureReason === 'سبب آخر' && (
                   <input
                     type="text"
-                    placeholder="اكتب السبب بالتفصيل..."
-                    onChange={(e) => setFailureReason(e.target.value)}
+                    placeholder="اكتب السبب بالتفصيل هنا..."
+                    value={customFailureText}
+                    onChange={(e) => setCustomFailureText(e.target.value)}
                     required
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-bold bg-white"
+                    autoFocus
+                    className="w-full px-4 py-3 border border-red-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-bold bg-white"
                   />
                 )}
               </div>
@@ -1073,14 +1110,20 @@ export default function AdminOrdersPage() {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedOrderForFailure(null)}
+                  onClick={() => {
+                    setSelectedOrderForFailure(null)
+                    setCustomFailureText('')
+                  }}
                   className="px-4 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  disabled={updatingOrderId === selectedOrderForFailure.id || !failureReason.trim()}
+                  disabled={
+                    updatingOrderId === selectedOrderForFailure.id ||
+                    (failureReason === 'سبب آخر' && !customFailureText.trim())
+                  }
                   className="px-5 py-2.5 rounded-xl bg-red-700 hover:bg-red-800 text-white text-xs font-bold transition-all shadow-md shadow-red-200 disabled:opacity-50"
                 >
                   {updatingOrderId === selectedOrderForFailure.id ? 'جاري الحفظ...' : 'تأكيد تسجيل الفشل ✓'}

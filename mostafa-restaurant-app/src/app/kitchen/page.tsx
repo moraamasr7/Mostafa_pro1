@@ -52,6 +52,14 @@ export default function KitchenDisplayPage() {
   useEffect(() => {
     fetchProcessingOrders()
 
+    const handleOnline = () => {
+      fetchProcessingOrders()
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', handleOnline)
+    }
+
     const channel = supabase
       .channel('kitchen-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
@@ -61,6 +69,9 @@ export default function KitchenDisplayPage() {
 
     return () => {
       supabase.removeChannel(channel)
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', handleOnline)
+      }
     }
   }, [])
 

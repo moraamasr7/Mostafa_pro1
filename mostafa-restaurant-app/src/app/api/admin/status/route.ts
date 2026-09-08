@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
 import { canTransitionStatus, OrderStatus, OrderType } from '@/types/orders'
+import { notifyOrderCancelled } from '@/lib/telegram'
 
 export async function POST(request: NextRequest) {
   try {
@@ -83,6 +84,28 @@ export async function POST(request: NextRequest) {
           { status: 409 }
         )
       }
+      if (new_status === 'cancelled' || new_status === 'failed') {
+        Promise.resolve(
+          serverSupabase
+            .from('orders')
+            .select('order_number, customer_name, total_amount')
+            .eq('id', order_id)
+            .single()
+        )
+          .then(({ data: ord }) => {
+            if (ord) {
+              notifyOrderCancelled({
+                orderNumber: ord.order_number,
+                customerName: ord.customer_name,
+                totalAmount: Number(ord.total_amount || 0),
+                cancelledBy: 'الكاشير',
+                reason: failure_reason || 'إلغاء يدوي من لوحة الإدارة',
+              }).catch(() => {})
+            }
+          })
+          .catch(() => {})
+      }
+
       return NextResponse.json(
         { success: true, message: res.message, status: res.updated_status },
         { status: 200 }
