@@ -35,7 +35,7 @@ export const ALLOWED_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   pending: ['processing', 'cancelled'],
   processing: ['ready', 'completed', 'cancelled'],
   ready: ['completed', 'assigned', 'cancelled'],
-  assigned: ['picked_up', 'cancelled'],
+  assigned: ['picked_up', 'out_for_delivery', 'cancelled'],
   picked_up: ['out_for_delivery', 'delivered', 'failed'],
   out_for_delivery: ['delivered', 'failed'],
   delivered: [],
