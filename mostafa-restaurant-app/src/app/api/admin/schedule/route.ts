@@ -6,7 +6,7 @@ import { ADMIN_COOKIE_NAME } from '../login/route'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const status = await isRestaurantOpen()
     const serverSupabase = getSupabaseServerClient()

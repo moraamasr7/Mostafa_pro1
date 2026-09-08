@@ -146,6 +146,7 @@ export default function AdminOrdersPage() {
       const data = await res.json()
       if (res.ok) {
         setIsAuthenticated(true)
+        setActionError(null)
         setPasscode('')
         fetchOrdersAndDrivers(activeTab)
       } else {

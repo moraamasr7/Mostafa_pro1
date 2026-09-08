@@ -32,19 +32,22 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const cookieStore = await cookies()
-    cookieStore.set(ADMIN_COOKIE_NAME, `staff_auth_${Date.now()}`, {
+    const response = NextResponse.json(
+      { success: true, message: 'تم تسجيل الدخول بنجاح' },
+      { status: 200 }
+    )
+
+    response.cookies.set({
+      name: ADMIN_COOKIE_NAME,
+      value: `staff_auth_${Date.now()}`,
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge: 60 * 60 * 12,
       path: '/',
     })
 
-    return NextResponse.json(
-      { success: true, message: 'تم تسجيل الدخول بنجاح' },
-      { status: 200 }
-    )
+    return response
   } catch (err) {
     console.error('خطأ في تسجيل دخول الإدارة:', err)
     return NextResponse.json(
