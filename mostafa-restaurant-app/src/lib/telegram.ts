@@ -61,6 +61,78 @@ export async function notifyShiftOpened(data: {
   return sendTelegramMessage(msg)
 }
 
+export interface ExecutiveDailyReportData {
+  shiftNumber: number | string
+  closedBy: string
+  dateStr?: string
+  totalSales: number
+  totalOrdersCount: number
+  deliverySales: number
+  deliveryOrdersCount: number
+  takeawaySales: number
+  takeawayOrdersCount: number
+  initialCash: number
+  totalExpenses: number
+  expectedCash: number
+  actualCash: number
+  discrepancy: number
+  deliveryTripsCount?: number
+  activeDriversCount?: number
+  cancelledOrdersCount?: number
+  cancelledAmount?: number
+  failedOrdersCount?: number
+  notes?: string
+}
+
+export async function sendExecutiveDailyReport(data: ExecutiveDailyReportData): Promise<TelegramSendResult> {
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+  const date = data.dateStr || new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const disc = Number(data.discrepancy || 0)
+  const discText = disc === 0
+    ? '✅ الدرج مطابق تماماً (0 ج.م)'
+    : disc > 0
+    ? `⚠️ زيادة بالدرج (+${disc.toLocaleString()} ج.م)`
+    : `🚨 عجز بالدرج (${disc.toLocaleString()} ج.م)`
+
+  const avgOrder = data.totalOrdersCount > 0 ? Math.round(data.totalSales / data.totalOrdersCount) : 0
+
+  const lines = [
+    `📊 <b>التقرير المالي والتشغيلي اليومي (#${data.shiftNumber})</b>`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `📅 <b>التاريخ:</b> ${date}`,
+    `⏰ <b>توقيت التقفيل:</b> ${time}`,
+    `👤 <b>المسؤول:</b> ${data.closedBy}`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `💵 <b>المبيعات والإيرادات:</b>`,
+    `• إجمالي المبيعات: <b>${Number(data.totalSales).toLocaleString()} ج.م</b> (${data.totalOrdersCount} طلب)`,
+    avgOrder > 0 ? `• متوسط الفاتورة: <b>${avgOrder.toLocaleString()} ج.م</b>` : '',
+    data.deliverySales > 0 ? `• مبيعات الدليفري: <b>${Number(data.deliverySales).toLocaleString()} ج.م</b> (${data.deliveryOrdersCount || 0} طلب)` : '',
+    data.takeawaySales > 0 ? `• صالة واستلام: <b>${Number(data.takeawaySales).toLocaleString()} ج.م</b> (${data.takeawayOrdersCount || 0} طلب)` : '',
+    `\n💸 <b>المصروفات والسلف:</b>`,
+    `• إجمالي الخارج من الدرج: <b>${Number(data.totalExpenses).toLocaleString()} ج.م</b>`,
+    `\n💰 <b>الخزينة ومطابقة النقدية:</b>`,
+    `• العهدة الافتتاحية: <b>${Number(data.initialCash).toLocaleString()} ج.م</b>`,
+    `• الكاش المطلوب توفره: <b>${Number(data.expectedCash).toLocaleString()} ج.م</b>`,
+    `• الكاش الفعلي المستلم: <b>${Number(data.actualCash).toLocaleString()} ج.م</b>`,
+    `• نتيجة الجرد: <b>${discText}</b>`,
+    (data.activeDriversCount || data.deliveryTripsCount) ? [
+      `\n🛵 <b>حركة التوصيل والأسطول:</b>`,
+      data.activeDriversCount ? `• الطيارين النشطين: <b>${data.activeDriversCount} طيارين</b>` : '',
+      data.deliveryTripsCount ? `• رحلات التوصيل: <b>${data.deliveryTripsCount} رحلة</b>` : '',
+    ].filter(Boolean).join('\n') : '',
+    (data.cancelledOrdersCount || data.failedOrdersCount) ? [
+      `\n⚠️ <b>الفواقد والإلغاءات:</b>`,
+      data.cancelledOrdersCount ? `• طلبات ملغاة: <b>${data.cancelledOrdersCount}</b> (بقيمة: ${data.cancelledAmount || 0} ج.م)` : '',
+      data.failedOrdersCount ? `• طلبات فاشلة / مرتجعة: <b>${data.failedOrdersCount}</b>` : '',
+    ].filter(Boolean).join('\n') : '',
+    data.notes ? `\n📝 <b>ملاحظات الإدارة:</b> ${data.notes}` : '',
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `✨ <i>تم التقفيل والاعتماد عبر لوحة العمليات السحابية.</i>`,
+  ].filter(Boolean).join('\n')
+
+  return sendTelegramMessage(lines)
+}
+
 export async function notifyShiftClosed(data: {
   shiftNumber: number | string
   closedBy: string
@@ -70,28 +142,39 @@ export async function notifyShiftClosed(data: {
   expectedCash: number
   actualCash: number
   discrepancy: number
+  totalOrdersCount?: number
+  deliverySales?: number
+  deliveryOrdersCount?: number
+  takeawaySales?: number
+  takeawayOrdersCount?: number
+  deliveryTripsCount?: number
+  activeDriversCount?: number
+  cancelledOrdersCount?: number
+  cancelledAmount?: number
+  failedOrdersCount?: number
   notes?: string
 }) {
-  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
-  const disc = Number(data.discrepancy)
-  const discText = disc === 0 ? '✅ الدرج مطابق تماماً (0 ج.م)' : disc > 0 ? `⚠️ زيادة في الدرج (+${disc.toFixed(0)} ج.م)` : `🚨 عجز في الدرج (${disc.toFixed(0)} ج.م)`
-
-  const msg = [
-    `🔒 <b>تقفيل وإغلاق الوردية (#${data.shiftNumber})</b>`,
-    `━━━━━━━━━━━━━━━━━━━`,
-    `👤 <b>أغلق بواسطة:</b> ${data.closedBy}`,
-    `⏰ <b>توقيت الإغلاق:</b> ${time}`,
-    `💰 <b>العهدة الافتتاحية:</b> ${Number(data.initialCash).toFixed(0)} ج.م`,
-    `📈 <b>إجمالي مبيعات الوردية:</b> ${Number(data.totalSales).toFixed(0)} ج.م`,
-    `💸 <b>إجمالي المصروفات والسلف:</b> ${Number(data.totalExpenses).toFixed(0)} ج.م`,
-    `💵 <b>المبلغ المحسوب المطلوب:</b> ${Number(data.expectedCash).toFixed(0)} ج.م`,
-    `🧾 <b>المبلغ الفعلي المستلم:</b> ${Number(data.actualCash).toFixed(0)} ج.م`,
-    `━━━━━━━━━━━━━━━━━━━`,
-    `📊 <b>المطابقة:</b> ${discText}`,
-    data.notes ? `📝 <b>ملاحظات:</b> ${data.notes}` : '',
-  ].filter(Boolean).join('\n')
-
-  return sendTelegramMessage(msg)
+  return sendExecutiveDailyReport({
+    shiftNumber: data.shiftNumber,
+    closedBy: data.closedBy,
+    totalSales: data.totalSales,
+    totalOrdersCount: data.totalOrdersCount || 0,
+    deliverySales: data.deliverySales || 0,
+    deliveryOrdersCount: data.deliveryOrdersCount || 0,
+    takeawaySales: data.takeawaySales || 0,
+    takeawayOrdersCount: data.takeawayOrdersCount || 0,
+    initialCash: data.initialCash,
+    totalExpenses: data.totalExpenses,
+    expectedCash: data.expectedCash,
+    actualCash: data.actualCash,
+    discrepancy: data.discrepancy,
+    deliveryTripsCount: data.deliveryTripsCount,
+    activeDriversCount: data.activeDriversCount,
+    cancelledOrdersCount: data.cancelledOrdersCount,
+    cancelledAmount: data.cancelledAmount,
+    failedOrdersCount: data.failedOrdersCount,
+    notes: data.notes,
+  })
 }
 
 export async function notifyExpenseRecorded(data: {

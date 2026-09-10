@@ -179,21 +179,46 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'الوردية غير موجودة أو تم إغلاقها بالفعل' }, { status: 400 })
       }
 
-      const { data: orders } = await serverSupabase
-        .from('orders')
-        .select('total_amount, status')
-        .gte('created_at', shift.opened_at)
+      const [ordersRes, expensesRes, tripsRes, driversRes] = await Promise.all([
+        serverSupabase
+          .from('orders')
+          .select('total_amount, status, order_type')
+          .gte('created_at', shift.opened_at),
+        serverSupabase
+          .from('shift_expenses')
+          .select('amount')
+          .eq('shift_id', shift.id),
+        serverSupabase
+          .from('delivery_trips')
+          .select('id, status')
+          .gte('created_at', shift.opened_at),
+        serverSupabase
+          .from('driver_shifts')
+          .select('driver_id')
+          .gte('started_at', shift.opened_at),
+      ])
 
-      const totalSales = (orders || [])
-        .filter(o => ['completed', 'delivered'].includes(o.status))
-        .reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
+      const orders = ordersRes.data || []
+      const expenses = expensesRes.data || []
+      const trips = tripsRes.data || []
+      const driverShifts = driversRes.data || []
 
-      const { data: expenses } = await serverSupabase
-        .from('shift_expenses')
-        .select('amount')
-        .eq('shift_id', shift.id)
+      const completedOrders = orders.filter(o => ['completed', 'delivered'].includes(o.status))
+      const totalSales = completedOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
 
-      const totalExpenses = (expenses || []).reduce((acc, e) => acc + Number(e.amount || 0), 0)
+      const deliveryOrders = completedOrders.filter(o => o.order_type === 'delivery')
+      const deliverySales = deliveryOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
+
+      const takeawayOrders = completedOrders.filter(o => o.order_type === 'takeaway' || o.order_type === 'dine_in')
+      const takeawaySales = takeawayOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
+
+      const cancelledOrders = orders.filter(o => o.status === 'cancelled')
+      const cancelledAmount = cancelledOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
+      const failedOrders = orders.filter(o => o.status === 'failed')
+
+      const uniqueDrivers = new Set(driverShifts.map(ds => ds.driver_id))
+
+      const totalExpenses = expenses.reduce((acc, e) => acc + Number(e.amount || 0), 0)
       const initialCash = Number(shift.initial_cash || 0)
       const expectedCash = initialCash + totalSales - totalExpenses
       const actualCash = Number(final_cash) || 0
@@ -228,6 +253,16 @@ export async function POST(request: NextRequest) {
         expectedCash,
         actualCash,
         discrepancy,
+        totalOrdersCount: completedOrders.length,
+        deliverySales,
+        deliveryOrdersCount: deliveryOrders.length,
+        takeawaySales,
+        takeawayOrdersCount: takeawayOrders.length,
+        deliveryTripsCount: trips.length,
+        activeDriversCount: uniqueDrivers.size,
+        cancelledOrdersCount: cancelledOrders.length,
+        cancelledAmount,
+        failedOrdersCount: failedOrders.length,
         notes: notes?.trim() || undefined,
       }).catch(() => {})
 
