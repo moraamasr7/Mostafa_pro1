@@ -36,6 +36,8 @@ export async function GET(request: NextRequest) {
         status,
         total_amount,
         notes,
+        failure_reason,
+        cancellation_reason,
         created_at,
         order_items (
           id,

@@ -40,6 +40,8 @@ interface Order {
   status: OrderStatus
   total_amount: number
   notes?: string
+  failure_reason?: string
+  cancellation_reason?: string
   created_at: string
   order_items?: OrderItem[]
   assigned_driver?: AssignedDriverInfo | null
@@ -793,6 +795,23 @@ export default function AdminOrdersPage() {
                         >
                           🔄 تغيير الطيار
                         </button>
+                      </div>
+                    )}
+
+                    {order.status === 'failed' && order.failure_reason && (
+                      <div className="mt-2 bg-rose-50 border border-rose-200 p-2.5 rounded-xl text-xs text-rose-900">
+                        <span className="font-bold flex items-center gap-1 text-rose-700">
+                          🚨 <strong>سبب تعذر التوصيل:</strong>
+                        </span>
+                        <p className="mt-0.5 font-bold text-rose-950 pr-2">{order.failure_reason}</p>
+                      </div>
+                    )}
+                    {order.status === 'cancelled' && (order.cancellation_reason || order.failure_reason) && (
+                      <div className="mt-2 bg-amber-50 border border-amber-200 p-2.5 rounded-xl text-xs text-amber-900">
+                        <span className="font-bold flex items-center gap-1 text-amber-700">
+                          ❌ <strong>سبب الإلغاء المسجل:</strong>
+                        </span>
+                        <p className="mt-0.5 font-bold text-amber-950 pr-2">{order.cancellation_reason || order.failure_reason}</p>
                       </div>
                     )}
                   </div>

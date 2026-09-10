@@ -70,10 +70,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const reasonText = failure_reason || body.reason || null
+
     const { data: rpcData, error: rpcError } = await serverSupabase.rpc('update_order_status_secure', {
       p_order_id: order_id,
       p_expected_status: current_status || null,
       p_new_status: new_status,
+      p_reason: reasonText,
     })
 
     if (!rpcError && rpcData && rpcData.length > 0) {
@@ -147,9 +150,16 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const updatePayload: Record<string, any> = { status: new_status }
+    if (new_status === 'cancelled') {
+      updatePayload.cancellation_reason = reasonText || 'إلغاء يدوي من الإدارة'
+    } else if (new_status === 'failed') {
+      updatePayload.failure_reason = reasonText || 'فشل التوصيل'
+    }
+
     const { error: updateErr } = await serverSupabase
       .from('orders')
-      .update({ status: new_status })
+      .update(updatePayload)
       .eq('id', order_id)
 
     if (updateErr) {
