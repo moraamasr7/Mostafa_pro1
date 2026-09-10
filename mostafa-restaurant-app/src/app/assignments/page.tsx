@@ -35,6 +35,10 @@ interface DeliveryOrder {
   customer_name: string
   customer_phone: string
   delivery_address?: string
+  customer_lat?: number
+  customer_lng?: number
+  delivery_distance_km?: number
+  delivery_fee?: number
   order_type: 'delivery'
   status: OrderStatus
   total_amount: number
@@ -59,12 +63,17 @@ export default function AdminAssignmentsPage() {
   const [reassigningOrder, setReassigningOrder] = useState<DeliveryOrder | null>(null)
 
   const [loading, setLoading] = useState(true)
+  const [isSyncing, setIsSyncing] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
 
-  const fetchAssignmentData = async () => {
-    setLoading(true)
+  const fetchAssignmentData = async (isBackground = false) => {
+    if (!isBackground && readyOrders.length === 0 && activeDeliveryOrders.length === 0) {
+      setLoading(true)
+    } else {
+      setIsSyncing(true)
+    }
     setActionError(null)
 
     try {
@@ -76,6 +85,7 @@ export default function AdminAssignmentsPage() {
       if (ordersRes.status === 401 || driversRes.status === 401) {
         setIsAuthenticated(false)
         setLoading(false)
+        setIsSyncing(false)
         return
       }
 
@@ -103,27 +113,32 @@ export default function AdminAssignmentsPage() {
         )
         setAvailableDrivers(eligible)
       } else {
-        setActionError('تعذر تحميل بيانات التعيين')
+        if (!isBackground) {
+          setActionError('تعذر تحميل بيانات التعيين')
+        }
       }
     } catch {
-      setActionError('تعذر الاتصال بالسيرفر')
+      if (!isBackground) {
+        setActionError('تعذر الاتصال بالسيرفر')
+      }
     } finally {
       setLoading(false)
+      setIsSyncing(false)
     }
   }
 
   useEffect(() => {
     const load = async () => {
-      await fetchAssignmentData()
+      await fetchAssignmentData(false)
     }
     load()
 
     const channel = supabase
       .channel('admin-assignments-page')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => fetchAssignmentData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchAssignmentData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => fetchAssignmentData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => fetchAssignmentData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => fetchAssignmentData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchAssignmentData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => fetchAssignmentData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => fetchAssignmentData(true))
       .subscribe()
 
     return () => {
@@ -191,7 +206,7 @@ export default function AdminAssignmentsPage() {
       setActionSuccess(data.message || 'تم تعيين الطلب للطيار بنجاح')
       setSelectedOrderId(null)
       setSelectedDriverId(null)
-      fetchAssignmentData()
+      fetchAssignmentData(true)
     } catch {
       setActionError('تعذر الاتصال بالسيرفر')
     } finally {
@@ -225,7 +240,7 @@ export default function AdminAssignmentsPage() {
 
       setActionSuccess(data.message || 'تمت إعادة تعيين الطلب بنجاح')
       setReassigningOrder(null)
-      fetchAssignmentData()
+      fetchAssignmentData(true)
     } catch {
       setActionError('تعذر الاتصال بالسيرفر')
     } finally {
@@ -255,8 +270,8 @@ export default function AdminAssignmentsPage() {
         return
       }
 
-      setActionSuccess(data.message)
-      fetchAssignmentData()
+      setActionSuccess(data.message || 'تم تحديث حالة التوصيل')
+      fetchAssignmentData(true)
     } catch {
       setActionError('تعذر الاتصال بالسيرفر')
     } finally {
@@ -338,7 +353,7 @@ export default function AdminAssignmentsPage() {
           </div>
         )}
 
-        {loading ? (
+        {loading && readyOrders.length === 0 && activeDeliveryOrders.length === 0 ? (
           <div className="text-center py-20">
             <div className="w-10 h-10 border-4 border-amber-300 border-t-amber-600 rounded-full animate-spin mx-auto" />
             <p className="mt-4 text-xs font-bold text-gray-500">جاري تحميل طلبات الدليفري والطيارين...</p>
@@ -403,7 +418,30 @@ export default function AdminAssignmentsPage() {
                               <span className="dir-ltr text-amber-700">📞 {order.customer_phone}</span>
                             </div>
                             {order.delivery_address && (
-                              <p className="text-gray-600 font-medium">📍 {order.delivery_address}</p>
+                              <div className="text-gray-600 font-medium space-y-1">
+                                <div className="flex items-start justify-between gap-1">
+                                  <p>📍 {order.delivery_address}</p>
+                                  {order.customer_lat && order.customer_lng && (
+                                    <a
+                                      href={`https://www.google.com/maps/dir/?api=1&origin=30.126131,31.298350&destination=${order.customer_lat},${order.customer_lng}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="shrink-0 bg-sky-100 hover:bg-sky-200 text-sky-900 px-1.5 py-0.5 rounded text-[10px] font-bold"
+                                    >
+                                      🗺️ خريطة
+                                    </a>
+                                  )}
+                                </div>
+                                {order.delivery_distance_km != null && (
+                                  <div className="flex items-center gap-2 text-[10px] font-bold text-amber-900 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200 w-fit">
+                                    <span>📏 {order.delivery_distance_km} كم من الفرع</span>
+                                    {order.delivery_fee != null && (
+                                      <span>• خدمة: {order.delivery_fee} ج.م</span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
 

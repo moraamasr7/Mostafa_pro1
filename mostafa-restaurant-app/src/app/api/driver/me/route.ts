@@ -61,7 +61,11 @@ export async function GET(request: NextRequest) {
             delivery_address,
             total_amount,
             notes,
-            status
+            status,
+            customer_lat,
+            customer_lng,
+            delivery_distance_km,
+            delivery_fee
           )
         )
       `)

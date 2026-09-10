@@ -17,6 +17,10 @@ interface OrderAssignment {
     total_amount: number
     notes?: string
     status: string
+    customer_lat?: number
+    customer_lng?: number
+    delivery_distance_km?: number
+    delivery_fee?: number
   }
 }
 
@@ -512,8 +516,25 @@ export default function DriverMobilePage() {
                       </div>
 
                       {o.delivery_address && (
-                        <div className="bg-zinc-800/40 p-3 rounded-2xl border border-zinc-800/80 text-gray-300 font-semibold leading-relaxed">
-                          📍 <strong>العنوان:</strong> {o.delivery_address}
+                        <div className="bg-zinc-800/40 p-3 rounded-2xl border border-zinc-800/80 text-gray-300 font-semibold leading-relaxed space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <p>📍 <strong>العنوان:</strong> {o.delivery_address}</p>
+                            {o.customer_lat && o.customer_lng && (
+                              <a
+                                href={`https://www.google.com/maps/dir/?api=1&origin=30.126131,31.298350&destination=${o.customer_lat},${o.customer_lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="shrink-0 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1 shadow-sm transition-all"
+                              >
+                                🗺️ خرائط GPS
+                              </a>
+                            )}
+                          </div>
+                          {o.delivery_distance_km != null && (
+                            <div className="text-[11px] text-amber-400 font-bold bg-amber-950/30 px-2.5 py-1 rounded-xl border border-amber-900/40 w-fit flex items-center gap-1">
+                              <span>📏 يبعد {o.delivery_distance_km} كم عن المطعم</span>
+                            </div>
+                          )}
                         </div>
                       )}
 

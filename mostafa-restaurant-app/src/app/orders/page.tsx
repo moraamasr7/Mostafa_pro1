@@ -42,6 +42,10 @@ interface Order {
   notes?: string
   failure_reason?: string
   cancellation_reason?: string
+  customer_lat?: number
+  customer_lng?: number
+  delivery_distance_km?: number
+  delivery_fee?: number
   created_at: string
   order_items?: OrderItem[]
   assigned_driver?: AssignedDriverInfo | null
@@ -73,10 +77,14 @@ export default function AdminOrdersPage() {
   const [newDriverName, setNewDriverName] = useState('')
   const [newDriverPhone, setNewDriverPhone] = useState('')
   const [isAddingDriver, setIsAddingDriver] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
 
-  const fetchOrdersAndDrivers = async (tabFilter = activeTab) => {
-    setLoading(true)
-    setActionError(null)
+  const fetchOrdersAndDrivers = async (tabFilter = activeTab, isBackground = false) => {
+    if (!isBackground && orders.length === 0) {
+      setLoading(true)
+    } else {
+      setIsSyncing(true)
+    }
 
     try {
       const [ordersRes, driversRes] = await Promise.all([
@@ -87,6 +95,7 @@ export default function AdminOrdersPage() {
       if (ordersRes.status === 401 || driversRes.status === 401) {
         setIsAuthenticated(false)
         setLoading(false)
+        setIsSyncing(false)
         return
       }
 
@@ -98,24 +107,29 @@ export default function AdminOrdersPage() {
         setOrders(ordersData.orders || [])
         setDrivers(driversData.drivers || [])
       } else {
-        setActionError('حدث خطأ أثناء تحميل البيانات')
+        if (!isBackground) {
+          setActionError('حدث خطأ أثناء تحميل البيانات')
+        }
       }
     } catch {
-      setActionError('تعذر الاتصال بالسيرفر')
+      if (!isBackground) {
+        setActionError('تعذر الاتصال بالسيرفر')
+      }
     } finally {
       setLoading(false)
+      setIsSyncing(false)
     }
   }
 
   useEffect(() => {
     const load = async () => {
-      await fetchOrdersAndDrivers(activeTab)
+      await fetchOrdersAndDrivers(activeTab, false)
     }
     load()
 
     const handleOnline = () => {
       setIsOnline(true)
-      fetchOrdersAndDrivers(activeTab)
+      fetchOrdersAndDrivers(activeTab, true)
     }
     const handleOffline = () => {
       setIsOnline(false)
@@ -130,19 +144,19 @@ export default function AdminOrdersPage() {
     const ordersChannel = supabase
       .channel('admin-realtime-all')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        fetchOrdersAndDrivers(activeTab)
+        fetchOrdersAndDrivers(activeTab, true)
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => {
-        fetchOrdersAndDrivers(activeTab)
+        fetchOrdersAndDrivers(activeTab, true)
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => {
-        fetchOrdersAndDrivers(activeTab)
+        fetchOrdersAndDrivers(activeTab, true)
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => {
-        fetchOrdersAndDrivers(activeTab)
+        fetchOrdersAndDrivers(activeTab, true)
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
-        fetchOrdersAndDrivers(activeTab)
+        fetchOrdersAndDrivers(activeTab, true)
       })
       .subscribe()
 
@@ -194,6 +208,12 @@ export default function AdminOrdersPage() {
     setActionError(null)
     setActionSuccess(null)
 
+    // تحديث تفاؤلي سريع في الواجهة (Optimistic UI Update) لعدم تجميد الشاشة أو إزعاج المستخدم
+    const previousOrders = [...orders]
+    setOrders((prev) =>
+      prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o))
+    )
+
     try {
       const res = await fetch('/api/admin/status', {
         method: 'POST',
@@ -208,28 +228,18 @@ export default function AdminOrdersPage() {
       const data = await res.json()
 
       if (!res.ok) {
+        // التراجع عن التحديث التفاؤلي إذا فشل السيرفر
+        setOrders(previousOrders)
         setActionError(data.error || 'تعذر تحديث الحالة')
-        if (res.status === 409) fetchOrdersAndDrivers(activeTab)
+        fetchOrdersAndDrivers(activeTab, true)
         return
       }
 
-      const statusLabels: Record<OrderStatus, string> = {
-        pending: 'في انتظار التأكيد',
-        processing: 'جاري التحضير',
-        ready: 'جاهز بالمطبخ / بالفرع',
-        assigned: 'تم تعيين الطيار',
-        picked_up: 'تم استلام الطيار',
-        out_for_delivery: 'في الطريق للعميل',
-        delivered: 'تم التوصيل للعميل',
-        completed: 'تم الاستلام بالفرع',
-        cancelled: 'تم الإلغاء',
-        failed: 'تعذر التوصيل',
-      }
-
-      setActionSuccess(`تم تحديث حالة الطلب بنجاح إلى (${statusLabels[newStatus] || newStatus})`)
-      fetchOrdersAndDrivers(activeTab)
+      // مزامنة صامتة في الخلفية بدون لودينج مزعج
+      fetchOrdersAndDrivers(activeTab, true)
     } catch {
-      setActionError('حدث خطأ في الشبكة، يرجى المحاولة لاحقاً')
+      setOrders(previousOrders)
+      setActionError('حدث خطأ في الشبكة أثناء التحديث')
     } finally {
       setUpdatingOrderId(null)
     }
@@ -462,9 +472,17 @@ export default function AdminOrdersPage() {
 
       <div className="bg-amber-950/10 border-b border-amber-900/20 px-4 py-2">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <span className="text-xs text-amber-900 font-bold">
-            ⚡ يتم تحديث الطلبات لحظياً بدون Refresh عبر Supabase Realtime
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-amber-900 font-bold">
+              ⚡ يتم تحديث الطلبات لحظياً بدون Refresh عبر Supabase Realtime
+            </span>
+            {isSyncing && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-100/80 px-2 py-0.5 rounded-full animate-pulse border border-amber-300/60">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-ping" />
+                مزامنة هادئة...
+              </span>
+            )}
+          </div>
           <button
             onClick={() => setShowDriverPanel(!showDriverPanel)}
             className="bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
@@ -672,7 +690,7 @@ export default function AdminOrdersPage() {
           </div>
         )}
 
-        {loading ? (
+        {loading && orders.length === 0 ? (
           <div className="text-center py-20">
             <div className="w-10 h-10 border-4 border-amber-300 border-t-amber-600 rounded-full animate-spin mx-auto" />
             <p className="mt-4 text-xs font-bold text-gray-500">جاري تحميل الطلبات والطيارين...</p>
@@ -741,9 +759,39 @@ export default function AdminOrdersPage() {
                     </div>
 
                     {order.delivery_address && (
-                      <p className="text-xs text-gray-700 bg-white p-2 rounded-xl border border-gray-200 mt-1">
-                        📍 <strong>العنوان:</strong> {order.delivery_address}
-                      </p>
+                      <div className="text-xs text-gray-700 bg-white p-2.5 rounded-xl border border-gray-200 mt-1 space-y-1.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <p>
+                            📍 <strong>العنوان:</strong> {order.delivery_address}
+                          </p>
+                          {order.customer_lat && order.customer_lng && (
+                            <a
+                              href={`https://www.google.com/maps/dir/?api=1&origin=30.126131,31.298350&destination=${order.customer_lat},${order.customer_lng}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="shrink-0 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-300 text-[10px] font-black px-2 py-0.5 rounded-lg flex items-center gap-1 transition-all"
+                              title="فتح خط السير من المطعم إلى موقع العميل على خرائط جوجل"
+                            >
+                              <span>🗺️ المسار بالخريطة</span>
+                            </a>
+                          )}
+                        </div>
+
+                        {(order.delivery_distance_km != null || (order.delivery_fee != null && order.order_type === 'delivery')) && (
+                          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100 text-[11px] font-bold">
+                            {order.delivery_distance_km != null && (
+                              <span className="bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md">
+                                📏 المسافة: {order.delivery_distance_km} كم
+                              </span>
+                            )}
+                            {order.delivery_fee != null && order.order_type === 'delivery' && (
+                              <span className="bg-emerald-50 text-emerald-900 border border-emerald-200 px-2 py-0.5 rounded-md">
+                                🛵 خدمة التوصيل: {order.delivery_fee} ج.م
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     )}
 
                     <div className="flex flex-wrap gap-1.5 mt-1 text-[11px]">

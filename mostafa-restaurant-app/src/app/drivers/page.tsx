@@ -42,8 +42,10 @@ export default function AdminDriversPage() {
   const [phone, setPhone] = useState('')
   const [isAdding, setIsAdding] = useState(false)
 
-  const fetchDriversData = async () => {
-    setLoading(true)
+  const fetchDriversData = async (isBackground = false) => {
+    if (!isBackground && drivers.length === 0) {
+      setLoading(true)
+    }
     setActionError(null)
 
     try {
@@ -92,10 +94,14 @@ export default function AdminDriversPage() {
 
         setDrivers(extended)
       } else {
-        setActionError(data.error || 'تعذر تحميل قائمة الطيارين')
+        if (!isBackground) {
+          setActionError(data.error || 'تعذر تحميل قائمة الطيارين')
+        }
       }
     } catch {
-      setActionError('تعذر الاتصال بالسيرفر')
+      if (!isBackground) {
+        setActionError('تعذر الاتصال بالسيرفر')
+      }
     } finally {
       setLoading(false)
     }
@@ -103,15 +109,15 @@ export default function AdminDriversPage() {
 
   useEffect(() => {
     const load = async () => {
-      await fetchDriversData()
+      await fetchDriversData(false)
     }
     load()
 
     const channel = supabase
       .channel('admin-drivers-page')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchDriversData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => fetchDriversData())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => fetchDriversData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchDriversData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => fetchDriversData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => fetchDriversData(true))
       .subscribe()
 
     return () => {
@@ -195,7 +201,7 @@ export default function AdminDriversPage() {
       const data = await res.json()
       if (res.ok) {
         setActionSuccess(data.message)
-        fetchDriversData()
+        fetchDriversData(true)
       } else {
         setActionError(data.error || 'فشل تنفيذ إجراء الوردية')
       }
@@ -309,7 +315,7 @@ export default function AdminDriversPage() {
           </form>
         </div>
 
-        {loading ? (
+        {loading && drivers.length === 0 ? (
           <div className="text-center py-20">
             <div className="w-10 h-10 border-4 border-amber-300 border-t-amber-600 rounded-full animate-spin mx-auto" />
             <p className="mt-4 text-xs font-bold text-gray-500">جاري تحميل بيانات الطيارين...</p>

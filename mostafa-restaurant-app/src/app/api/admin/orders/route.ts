@@ -38,6 +38,10 @@ export async function GET(request: NextRequest) {
         notes,
         failure_reason,
         cancellation_reason,
+        customer_lat,
+        customer_lng,
+        delivery_distance_km,
+        delivery_fee,
         created_at,
         order_items (
           id,
