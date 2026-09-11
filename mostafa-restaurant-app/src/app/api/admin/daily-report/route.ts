@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     const [ordersRes, expensesRes, tripsRes, driversRes] = await Promise.all([
       serverSupabase
         .from('orders')
-        .select('total_amount, status, order_type, created_at')
+        .select('total_amount, status, order_type, payment_method, created_at')
         .gte('created_at', startTime)
         .lte('created_at', endTime),
       serverSupabase
@@ -53,6 +53,8 @@ export async function GET(req: NextRequest) {
 
     const completedOrders = orders.filter((o: any) => ['completed', 'delivered'].includes(o.status))
     const totalSales = completedOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
+    const cashSales = completedOrders.reduce((acc: number, o: any) => ((o.payment_method || 'cash') === 'cash' ? acc + Number(o.total_amount || 0) : acc), 0)
+    const nonCashSales = totalSales - cashSales
 
     const deliveryOrders = completedOrders.filter((o: any) => o.order_type === 'delivery')
     const deliverySales = deliveryOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
@@ -67,7 +69,7 @@ export async function GET(req: NextRequest) {
     const uniqueDrivers = new Set(driverShifts.map((ds: any) => ds.driver_id))
     const totalExpenses = expenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0)
     const initialCash = Number(activeShift.initial_cash || 0)
-    const expectedCash = initialCash + totalSales - totalExpenses
+    const expectedCash = initialCash + cashSales - totalExpenses
     const actualCash = activeShift.status === 'closed' ? Number(activeShift.final_cash || 0) : null
     const discrepancy = actualCash !== null ? actualCash - expectedCash : null
 
@@ -87,6 +89,8 @@ export async function GET(req: NextRequest) {
       closedBy: activeShift.closed_by || null,
       closedAt: activeShift.closed_at || null,
       totalSales,
+      cashSales,
+      nonCashSales,
       totalOrdersCount: completedOrders.length,
       averageOrderValue: completedOrders.length > 0 ? Math.round(totalSales / completedOrders.length) : 0,
       deliverySales,
@@ -147,7 +151,7 @@ export async function POST(req: NextRequest) {
     const [ordersRes, expensesRes, tripsRes, driversRes] = await Promise.all([
       serverSupabase
         .from('orders')
-        .select('total_amount, status, order_type')
+        .select('total_amount, status, order_type, payment_method')
         .gte('created_at', startTime)
         .lte('created_at', endTime),
       serverSupabase.from('shift_expenses').select('amount').eq('shift_id', shift.id),
@@ -162,6 +166,8 @@ export async function POST(req: NextRequest) {
 
     const completedOrders = orders.filter((o: any) => ['completed', 'delivered'].includes(o.status))
     const totalSales = completedOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
+    const cashSales = completedOrders.reduce((acc: number, o: any) => ((o.payment_method || 'cash') === 'cash' ? acc + Number(o.total_amount || 0) : acc), 0)
+    const nonCashSales = totalSales - cashSales
 
     const deliveryOrders = completedOrders.filter((o: any) => o.order_type === 'delivery')
     const deliverySales = deliveryOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
@@ -176,7 +182,7 @@ export async function POST(req: NextRequest) {
     const uniqueDrivers = new Set(driverShifts.map((ds: any) => ds.driver_id))
     const totalExpenses = expenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0)
     const initialCash = Number(shift.initial_cash || 0)
-    const expectedCash = initialCash + totalSales - totalExpenses
+    const expectedCash = initialCash + cashSales - totalExpenses
     const actualCash = Number(shift.final_cash ?? expectedCash)
     const discrepancy = actualCash - expectedCash
 

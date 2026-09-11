@@ -55,18 +55,27 @@ export async function GET(request: NextRequest) {
 
     const { data: orders } = await serverSupabase
       .from('orders')
-      .select('id, total_amount, order_type, status')
+      .select('id, total_amount, order_type, status, payment_method')
       .gte('created_at', shiftStartTime)
 
     let totalSales = 0
+    let cashSales = 0
+    let nonCashSales = 0
     let takeawaySales = 0
     let deliverySales = 0
 
     ;(orders || []).forEach(o => {
       if (['completed', 'delivered'].includes(o.status)) {
-        totalSales += Number(o.total_amount || 0)
-        if (o.order_type === 'takeaway') takeawaySales += Number(o.total_amount || 0)
-        if (o.order_type === 'delivery') deliverySales += Number(o.total_amount || 0)
+        const amount = Number(o.total_amount || 0)
+        totalSales += amount
+        const isCash = (o.payment_method || 'cash') === 'cash'
+        if (isCash) {
+          cashSales += amount
+        } else {
+          nonCashSales += amount
+        }
+        if (o.order_type === 'takeaway') takeawaySales += amount
+        if (o.order_type === 'delivery') deliverySales += amount
       }
     })
 
@@ -77,7 +86,7 @@ export async function GET(request: NextRequest) {
 
     const totalExpenses = (expenses || []).reduce((acc, exp) => acc + Number(exp.amount || 0), 0)
     const initialCash = Number(activeShift.initial_cash || 0)
-    const systemExpectedCash = initialCash + totalSales - totalExpenses
+    const systemExpectedCash = initialCash + cashSales - totalExpenses
 
     // 🛵 Single Source of Truth for Driver Fleet Accounting
     const fleetAccounting = await calculateFleetDriversAccounting(
@@ -91,6 +100,8 @@ export async function GET(request: NextRequest) {
       activeShift: {
         ...activeShift,
         totalSales,
+        cashSales,
+        nonCashSales,
         takeawaySales,
         deliverySales,
         totalExpenses,
@@ -200,7 +211,7 @@ export async function POST(request: NextRequest) {
       const [ordersRes, expensesRes, tripsRes, driversRes, openDriverShiftsRes] = await Promise.all([
         serverSupabase
           .from('orders')
-          .select('id, order_number, total_amount, status, order_type')
+          .select('id, order_number, total_amount, status, order_type, payment_method')
           .gte('created_at', shift.opened_at),
         serverSupabase
           .from('shift_expenses')
@@ -257,6 +268,8 @@ export async function POST(request: NextRequest) {
 
       const completedOrders = orders.filter(o => ['completed', 'delivered'].includes(o.status))
       const totalSales = completedOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
+      const cashSales = completedOrders.reduce((acc, o) => ((o.payment_method || 'cash') === 'cash' ? acc + Number(o.total_amount || 0) : acc), 0)
+      const nonCashSales = totalSales - cashSales
 
       const deliveryOrders = completedOrders.filter(o => o.order_type === 'delivery')
       const deliverySales = deliveryOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
@@ -272,7 +285,7 @@ export async function POST(request: NextRequest) {
 
       const totalExpenses = expenses.reduce((acc, e) => acc + Number(e.amount || 0), 0)
       const initialCash = Number(shift.initial_cash || 0)
-      const expectedCash = initialCash + totalSales - totalExpenses
+      const expectedCash = initialCash + cashSales - totalExpenses
       const actualCash = Number(final_cash) || 0
       const discrepancy = actualCash - expectedCash
 

@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import { OrderStatus, STATUS_UI_CONFIG } from '@/types/orders'
 import { Driver } from '@/types/drivers'
 import OpsNavbar from '@/components/OpsNavbar'
+import ManualOrderModal from '@/components/ManualOrderModal'
 
 interface OrderItem {
   id: string
@@ -36,6 +37,9 @@ interface Order {
   customer_phone: string
   delivery_address?: string
   order_type: 'takeaway' | 'delivery' | 'dine_in'
+  order_source?: 'online' | 'manual'
+  daily_shift_id?: string
+  created_by_staff?: string
   payment_method?: string
   payment_receipt_url?: string
   status: OrderStatus
@@ -81,6 +85,7 @@ export default function AdminOrdersPage() {
   const [isSyncing, setIsSyncing] = useState(false)
   const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number; opened_by: string } | null>(null)
   const [hasCheckedShift, setHasCheckedShift] = useState(false)
+  const [showManualOrderModal, setShowManualOrderModal] = useState(false)
 
   const fetchOrdersAndDrivers = async (tabFilter = activeTab, isBackground = false) => {
     if (!isBackground && orders.length === 0) {
@@ -522,6 +527,19 @@ export default function AdminOrdersPage() {
               )
             )}
             <button
+              onClick={() => {
+                if (!dailyShift) {
+                  setActionError('تنبيه أمان التشغيل: يجب فتح الوردية اليومية أولاً من مركز التحكم لتسجيل طلبات يدوية.')
+                  return
+                }
+                setShowManualOrderModal(true)
+              }}
+              className="bg-gradient-to-l from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 text-white text-xs font-black py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+            >
+              <span>➕</span>
+              <span>طلب يدوي جديد</span>
+            </button>
+            <button
               onClick={() => setShowDriverPanel(!showDriverPanel)}
               className="bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
             >
@@ -786,15 +804,24 @@ export default function AdminOrdersPage() {
                           📞 {order.customer_phone}
                         </a>
                       </div>
-                      <span
-                        className={`text-[10px] font-bold px-2.5 py-1 rounded-lg ${
-                          order.order_type === 'delivery'
-                            ? 'bg-purple-100 text-purple-800 border border-purple-200'
-                            : 'bg-amber-100 text-amber-800 border border-amber-200'
-                        }`}
-                      >
-                        {order.order_type === 'delivery' ? '🛵 دليفري' : '🏪 استلام فرع'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        {order.order_source === 'manual' && (
+                          <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-orange-100 text-orange-800 border border-orange-200">
+                            📝 كاشير يدوي
+                          </span>
+                        )}
+                        <span
+                          className={`text-[10px] font-bold px-2.5 py-1 rounded-lg ${
+                            order.order_type === 'delivery'
+                              ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                              : order.order_type === 'dine_in'
+                              ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                              : 'bg-amber-100 text-amber-800 border border-amber-200'
+                          }`}
+                        >
+                          {order.order_type === 'delivery' ? '🛵 دليفري' : order.order_type === 'dine_in' ? '🍽️ صالة' : '🏪 استلام فرع'}
+                        </span>
+                      </div>
                     </div>
 
                     {order.delivery_address && (
@@ -835,7 +862,7 @@ export default function AdminOrdersPage() {
 
                     <div className="flex flex-wrap gap-1.5 mt-1 text-[11px]">
                       <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-lg font-bold">
-                        💳 الدفع: {order.payment_method === 'instapay' ? 'إنستا باي ⚡' : order.payment_method === 'wallet' ? 'فودافون كاش 📱' : 'نقدي كاش 💵'}
+                        💳 الدفع: {order.payment_method === 'instapay' ? 'إنستا باي ⚡' : order.payment_method === 'wallet' ? 'فودافون كاش 📱' : order.payment_method === 'card' ? 'فيزا / بطاقة 💳' : 'نقدي كاش 💵'}
                       </span>
                       {order.payment_receipt_url && (
                         <div className="w-full bg-blue-50/80 border border-blue-200 p-2 rounded-xl text-blue-900 font-semibold space-y-1">
@@ -1239,6 +1266,18 @@ export default function AdminOrdersPage() {
           </div>
         </div>
       )}
+
+      {/* Manual Order Entry Modal for Cashier */}
+      <ManualOrderModal
+        isOpen={showManualOrderModal}
+        onClose={() => setShowManualOrderModal(false)}
+        onSuccess={(msg) => {
+          setActionSuccess(msg)
+          fetchOrdersAndDrivers(activeTab, true)
+        }}
+        dailyShiftNumber={dailyShift?.shift_number}
+        openedBy={dailyShift?.opened_by}
+      />
     </div>
   )
 }

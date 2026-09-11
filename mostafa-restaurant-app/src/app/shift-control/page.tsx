@@ -72,6 +72,8 @@ interface ActiveDailyShift {
   status: 'open' | 'closed'
   notes?: string
   totalSales: number
+  cashSales?: number
+  nonCashSales?: number
   takeawaySales: number
   deliverySales: number
   totalExpenses: number
