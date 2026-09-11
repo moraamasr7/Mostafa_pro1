@@ -99,7 +99,7 @@ export default function AdminDriversPage() {
 
         const extended: DriverExtended[] = rawDrivers.map((d) => ({
           ...d,
-          started_at: shiftMap.get(d.id) || null,
+          started_at: d.accounting?.started_at || shiftMap.get(d.id) || null,
           current_order_number: assignmentMap.get(d.id) || null,
         }))
 
@@ -129,6 +129,8 @@ export default function AdminDriversPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchDriversData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => fetchDriversData(true))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => fetchDriversData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_expenses' }, () => fetchDriversData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => fetchDriversData(true))
       .subscribe()
 
     return () => {
@@ -415,6 +417,80 @@ export default function AdminDriversPage() {
                       </div>
                     )}
                   </div>
+
+                  {/* 💰 الشريط المالي ومستحقات الوردية للطيار */}
+                  {d.accounting ? (
+                    <div className="bg-emerald-50/70 rounded-2xl border border-emerald-200 p-3.5 space-y-2.5 text-xs">
+                      <div className="flex justify-between items-center border-b border-emerald-200/80 pb-2">
+                        <span className="font-extrabold text-emerald-950 flex items-center gap-1.5">
+                          <span>📊 مستحقات الوردية</span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                            d.accounting.shift_status === 'open'
+                              ? 'bg-emerald-200 text-emerald-900'
+                              : 'bg-gray-200 text-gray-700'
+                          }`}>
+                            {d.accounting.shift_status === 'open' ? 'نشطة حالياً' : 'مغلقة'}
+                          </span>
+                        </span>
+                        <span className="text-[11px] font-bold text-emerald-800 tabular-nums">
+                          ⏱️ {d.accounting.duration_hours} ساعة
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-[11px]">
+                        <div className="bg-white/80 p-2 rounded-xl border border-emerald-100 space-y-0.5">
+                          <span className="text-gray-500 font-semibold block">أجر الساعات ({d.accounting.hourly_rate} ج/س):</span>
+                          <span className="font-extrabold text-gray-900 tabular-nums">
+                            {d.accounting.hours_wage} ج.م
+                          </span>
+                        </div>
+                        <div className="bg-white/80 p-2 rounded-xl border border-emerald-100 space-y-0.5">
+                          <span className="text-gray-500 font-semibold block">طلبات مسلّمة ({d.accounting.delivered_orders_count}):</span>
+                          <span className="font-extrabold text-emerald-700 tabular-nums">
+                            +{d.accounting.delivery_commission_total} ج.م
+                          </span>
+                        </div>
+                      </div>
+
+                      {d.accounting.failed_or_cancelled_orders.length > 0 && (
+                        <div className="bg-rose-50/80 border border-rose-200 p-2 rounded-xl space-y-1 text-[11px]">
+                          <span className="font-bold text-rose-900 block">
+                            ⚠️ طلبات غير مسلّمة ({d.accounting.failed_or_cancelled_orders.length}):
+                          </span>
+                          {d.accounting.failed_or_cancelled_orders.map((f, idx) => (
+                            <div key={idx} className="flex justify-between text-[10px] text-rose-800">
+                              <span>طلب #{f.order_number} ({f.status === 'failed' ? 'فاشل' : 'ملغي'}):</span>
+                              <span className="font-medium truncate max-w-[140px]" title={f.reason}>{f.reason}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="bg-white/80 p-2 rounded-xl border border-emerald-100 flex justify-between items-center text-[11px]">
+                        <span className="text-gray-600 font-semibold">إجمالي السلف المسحوبة:</span>
+                        <span className="font-extrabold text-rose-600 tabular-nums">
+                          {d.accounting.advances_total > 0 ? `-${d.accounting.advances_total} ج.م` : '0 ج.م'}
+                        </span>
+                      </div>
+
+                      {/* معادلة الحساب وصافي المستحق */}
+                      <div className="bg-emerald-700 text-white p-2.5 rounded-xl space-y-1 shadow-sm">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[11px] font-bold">صافي مستحق الطيار:</span>
+                          <span className="text-sm font-black tabular-nums">
+                            {d.accounting.net_payout} ج.م
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-emerald-200 leading-tight">
+                          ({d.accounting.hours_wage} أجر + {d.accounting.delivery_commission_total} عمولات) - {d.accounting.advances_total} سلف
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 border border-dashed border-gray-200 rounded-2xl p-3 text-center text-[11px] text-gray-400 font-medium">
+                      لا توجد وردية مسجلة للطيار اليوم لاحتساب المستحقات
+                    </div>
+                  )}
 
                   <div className="pt-2 border-t border-gray-100 flex items-center justify-between">
                     {d.active_shift_id ? (

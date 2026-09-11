@@ -37,6 +37,31 @@ export interface DeliveryOutcome {
   created_at: string
 }
 
+export interface DriverShiftAccounting {
+  shift_id: string
+  shift_status: ShiftStatus
+  started_at: string
+  ended_at?: string | null
+  duration_hours: number
+  hourly_rate: number
+  hours_wage: number
+  delivered_orders_count: number
+  delivery_commission_total: number
+  failed_or_cancelled_orders: Array<{
+    order_number: number
+    status: string
+    reason: string
+  }>
+  advances_total: number
+  advances_list: Array<{
+    id: string
+    amount: number
+    description: string
+    created_at: string
+  }>
+  net_payout: number
+}
+
 export interface Driver {
   id: string
   name: string
@@ -48,6 +73,8 @@ export interface Driver {
   active_shift_id?: string
   current_order_id?: string
   assigned_orders_count?: number
+  out_for_delivery_orders_count?: number
+  accounting?: DriverShiftAccounting | null
 }
 
 export interface DriverShift {

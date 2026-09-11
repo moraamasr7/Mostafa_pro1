@@ -520,6 +520,7 @@ export default function AdminAssignmentsPage() {
                   <div className="space-y-3">
                     {availableDrivers.map((driver) => {
                       const isSelected = selectedDriverId === driver.id
+                      const isOutOfDelivery = (driver.out_for_delivery_orders_count || 0) > 0
 
                       return (
                         <div
@@ -534,16 +535,31 @@ export default function AdminAssignmentsPage() {
                           <div className="flex justify-between items-center">
                             <div>
                               <h3 className="font-extrabold text-sm text-gray-900">{driver.name}</h3>
+                              {isOutOfDelivery && (
+                                <p className="text-[11px] font-bold text-amber-700 mt-1 flex items-center gap-1">
+                                  <span>⚠️ في خط سير ميداني</span>
+                                  <span className="bg-amber-100 px-1.5 py-0.5 rounded text-[10px] text-amber-800">
+                                    {driver.out_for_delivery_orders_count} قيد التسليم
+                                  </span>
+                                </p>
+                              )}
                             </div>
-                            <span
-                              className={`text-xs font-bold px-3 py-1 rounded-xl transition-colors ${
-                                isSelected
-                                  ? 'bg-green-700 text-white'
-                                  : 'bg-green-100 text-green-800 border border-green-200'
-                              }`}
-                            >
-                              {isSelected ? '✓ محدد' : '🟢 متاح'}
-                            </span>
+                            <div className="flex flex-col items-end gap-1">
+                              <span
+                                className={`text-xs font-bold px-3 py-1 rounded-xl transition-colors ${
+                                  isSelected
+                                    ? 'bg-green-700 text-white'
+                                    : 'bg-green-100 text-green-800 border border-green-200'
+                                }`}
+                              >
+                                {isSelected ? '✓ محدد' : '🟢 متاح'}
+                              </span>
+                              {driver.assigned_orders_count ? (
+                                <span className="text-[10px] font-semibold text-gray-500">
+                                  إجمالي المعين: {driver.assigned_orders_count}
+                                </span>
+                              ) : null}
+                            </div>
                           </div>
                         </div>
                       )
@@ -561,6 +577,18 @@ export default function AdminAssignmentsPage() {
                       الطيار: {selectedDriver ? `${selectedDriver.name}` : 'لم يحدد'}
                     </p>
                   </div>
+
+                  {selectedDriver && (selectedDriver.out_for_delivery_orders_count || 0) > 0 && (
+                    <div className="bg-amber-50 border border-amber-300 p-3 rounded-2xl text-[11px] font-bold text-amber-900 flex items-start gap-2">
+                      <span className="text-base leading-none">⚠️</span>
+                      <div>
+                        <p className="font-black text-amber-950">تنبيه تشغيلي للكاشير:</p>
+                        <p className="text-amber-800 font-medium mt-0.5">
+                          هذا الطيار خرج بالفعل في رحلة توصيل ميدانية ولديه {selectedDriver.out_for_delivery_orders_count} طلب معلق. سيتم إلحاق هذا الطلب برحلته الحالية ما لم تتجاوز السعة القصوى المسموحة.
+                        </p>
+                      </div>
+                    </div>
+                  )}
 
                   <button
                     onClick={handleConfirmAssignment}
