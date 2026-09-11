@@ -78,6 +78,14 @@ export interface ExecutiveDailyReportData {
   discrepancy: number
   deliveryTripsCount?: number
   activeDriversCount?: number
+  fleetAccounting?: {
+    totalHours?: number
+    totalHoursWage?: number
+    totalDeliveredOrders?: number
+    totalDeliveryCommissions?: number
+    totalDriverAdvances?: number
+    totalNetPayout?: number
+  }
   cancelledOrdersCount?: number
   cancelledAmount?: number
   failedOrdersCount?: number
@@ -115,10 +123,16 @@ export async function sendExecutiveDailyReport(data: ExecutiveDailyReportData): 
     `• الكاش المطلوب توفره: <b>${Number(data.expectedCash).toLocaleString()} ج.م</b>`,
     `• الكاش الفعلي المستلم: <b>${Number(data.actualCash).toLocaleString()} ج.م</b>`,
     `• نتيجة الجرد: <b>${discText}</b>`,
-    (data.activeDriversCount || data.deliveryTripsCount) ? [
+    (data.activeDriversCount || data.deliveryTripsCount || data.fleetAccounting) ? [
       `\n🛵 <b>حركة التوصيل والأسطول:</b>`,
       data.activeDriversCount ? `• الطيارين النشطين: <b>${data.activeDriversCount} طيارين</b>` : '',
       data.deliveryTripsCount ? `• رحلات التوصيل: <b>${data.deliveryTripsCount} رحلة</b>` : '',
+      data.fleetAccounting && data.fleetAccounting.totalNetPayout !== undefined ? [
+        `• ساعات عمل الأسطول: <b>${data.fleetAccounting.totalHours || 0} ساعة</b> (${(data.fleetAccounting.totalHoursWage || 0).toLocaleString()} ج.م)`,
+        `• طلبات مسلّمة بالأسطول: <b>${data.fleetAccounting.totalDeliveredOrders || 0} طلب</b> (عمولات: ${(data.fleetAccounting.totalDeliveryCommissions || 0).toLocaleString()} ج.م)`,
+        data.fleetAccounting.totalDriverAdvances ? `• سلف الطيارين المسحوبة: <b>-${(data.fleetAccounting.totalDriverAdvances).toLocaleString()} ج.م</b>` : '',
+        `• <b>صافي مستحقات الطيارين: ${Number(data.fleetAccounting.totalNetPayout).toLocaleString()} ج.م</b>`,
+      ].filter(Boolean).join('\n') : '',
     ].filter(Boolean).join('\n') : '',
     (data.cancelledOrdersCount || data.failedOrdersCount) ? [
       `\n⚠️ <b>الفواقد والإلغاءات:</b>`,
@@ -149,6 +163,14 @@ export async function notifyShiftClosed(data: {
   takeawayOrdersCount?: number
   deliveryTripsCount?: number
   activeDriversCount?: number
+  fleetAccounting?: {
+    totalHours?: number
+    totalHoursWage?: number
+    totalDeliveredOrders?: number
+    totalDeliveryCommissions?: number
+    totalDriverAdvances?: number
+    totalNetPayout?: number
+  }
   cancelledOrdersCount?: number
   cancelledAmount?: number
   failedOrdersCount?: number
@@ -170,6 +192,7 @@ export async function notifyShiftClosed(data: {
     discrepancy: data.discrepancy,
     deliveryTripsCount: data.deliveryTripsCount,
     activeDriversCount: data.activeDriversCount,
+    fleetAccounting: data.fleetAccounting,
     cancelledOrdersCount: data.cancelledOrdersCount,
     cancelledAmount: data.cancelledAmount,
     failedOrdersCount: data.failedOrdersCount,

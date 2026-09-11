@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { sendExecutiveDailyReport } from '@/lib/telegram'
+import { calculateFleetDriversAccounting } from '@/lib/driverAccounting'
 
 export const dynamic = 'force-dynamic'
 
@@ -67,6 +68,14 @@ export async function GET(req: NextRequest) {
     const actualCash = activeShift.status === 'closed' ? Number(activeShift.final_cash || 0) : null
     const discrepancy = actualCash !== null ? actualCash - expectedCash : null
 
+    // 🛵 Single Source of Truth for Driver Fleet Accounting
+    const fleetAccounting = await calculateFleetDriversAccounting(
+      serverSupabase,
+      activeShift.id,
+      activeShift.opened_at,
+      activeShift.closed_at
+    )
+
     const reportData = {
       shiftNumber: activeShift.shift_number,
       shiftStatus: activeShift.status,
@@ -88,6 +97,16 @@ export async function GET(req: NextRequest) {
       discrepancy,
       activeDriversCount: uniqueDrivers.size,
       deliveryTripsCount: trips.length,
+      fleetAccounting: {
+        hourlyRate: fleetAccounting.hourly_rate,
+        driversCount: fleetAccounting.drivers_count,
+        totalHours: fleetAccounting.total_hours,
+        totalHoursWage: fleetAccounting.total_hours_wage,
+        totalDeliveredOrders: fleetAccounting.total_delivered_orders,
+        totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
+        totalDriverAdvances: fleetAccounting.total_driver_advances,
+        totalNetPayout: fleetAccounting.total_net_payout,
+      },
       cancelledOrdersCount: cancelledOrders.length,
       cancelledAmount,
       failedOrdersCount: failedOrders.length,
@@ -158,6 +177,14 @@ export async function POST(req: NextRequest) {
     const actualCash = Number(shift.final_cash ?? expectedCash)
     const discrepancy = actualCash - expectedCash
 
+    // 🛵 Single Source of Truth for Driver Fleet Accounting
+    const fleetAccounting = await calculateFleetDriversAccounting(
+      serverSupabase,
+      shift.id,
+      shift.opened_at,
+      shift.closed_at
+    )
+
     const result = await sendExecutiveDailyReport({
       shiftNumber: shift.shift_number,
       closedBy: shift.closed_by || shift.opened_by || 'الإدارة',
@@ -174,6 +201,14 @@ export async function POST(req: NextRequest) {
       discrepancy,
       deliveryTripsCount: trips.length,
       activeDriversCount: uniqueDrivers.size,
+      fleetAccounting: {
+        totalHours: fleetAccounting.total_hours,
+        totalHoursWage: fleetAccounting.total_hours_wage,
+        totalDeliveredOrders: fleetAccounting.total_delivered_orders,
+        totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
+        totalDriverAdvances: fleetAccounting.total_driver_advances,
+        totalNetPayout: fleetAccounting.total_net_payout,
+      },
       cancelledOrdersCount: cancelledOrders.length,
       cancelledAmount,
       failedOrdersCount: failedOrders.length,

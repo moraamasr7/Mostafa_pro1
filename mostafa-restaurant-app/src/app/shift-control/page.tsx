@@ -76,6 +76,16 @@ interface ActiveDailyShift {
   deliverySales: number
   totalExpenses: number
   systemExpectedCash: number
+  fleetAccounting?: {
+    hourlyRate: number
+    driversCount: number
+    totalHours: number
+    totalHoursWage: number
+    totalDeliveredOrders: number
+    totalDeliveryCommissions: number
+    totalDriverAdvances: number
+    totalNetPayout: number
+  } | null
 }
 
 interface ShiftExpenseItem {
@@ -662,6 +672,27 @@ export default function ShiftControlCenterPage() {
                 </span>
               </div>
             </div>
+
+            {/* 🛵 Driver Fleet Accounting Snapshot (Single Source of Truth) */}
+            {dailyShift.fleetAccounting && (
+              <div className="bg-emerald-950/40 rounded-2xl border border-emerald-700/50 p-3.5 text-xs flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xl">🛵</span>
+                  <div>
+                    <span className="font-extrabold text-emerald-300 text-xs block">
+                      محاسبة أسطول الطيارين للوردية ({dailyShift.fleetAccounting.driversCount} طيارين)
+                    </span>
+                    <span className="text-[11px] text-emerald-200/80">
+                      إجمالي الساعات: {dailyShift.fleetAccounting.totalHours} س ({dailyShift.fleetAccounting.totalHoursWage} ج.م) • طلبات مسلّمة: {dailyShift.fleetAccounting.totalDeliveredOrders} (عمولات: {dailyShift.fleetAccounting.totalDeliveryCommissions} ج.م) • سلف مسحوبة: -{dailyShift.fleetAccounting.totalDriverAdvances} ج.م
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-emerald-600/90 text-white px-4 py-2 rounded-xl text-center shadow-sm">
+                  <span className="text-[10px] block font-bold text-emerald-100">إجمالي صافي مستحقات الأسطول</span>
+                  <span className="text-base font-black tabular-nums">{dailyShift.fleetAccounting.totalNetPayout} ج.م</span>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

@@ -3,6 +3,7 @@ import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
 import { notifyShiftOpened, notifyShiftClosed } from '@/lib/telegram'
+import { calculateFleetDriversAccounting } from '@/lib/driverAccounting'
 
 export const dynamic = 'force-dynamic'
 
@@ -78,6 +79,13 @@ export async function GET(request: NextRequest) {
     const initialCash = Number(activeShift.initial_cash || 0)
     const systemExpectedCash = initialCash + totalSales - totalExpenses
 
+    // 🛵 Single Source of Truth for Driver Fleet Accounting
+    const fleetAccounting = await calculateFleetDriversAccounting(
+      serverSupabase,
+      activeShift.id,
+      activeShift.opened_at
+    ).catch(() => null)
+
     return NextResponse.json({
       hasActiveShift: true,
       activeShift: {
@@ -87,6 +95,16 @@ export async function GET(request: NextRequest) {
         deliverySales,
         totalExpenses,
         systemExpectedCash,
+        fleetAccounting: fleetAccounting ? {
+          hourlyRate: fleetAccounting.hourly_rate,
+          driversCount: fleetAccounting.drivers_count,
+          totalHours: fleetAccounting.total_hours,
+          totalHoursWage: fleetAccounting.total_hours_wage,
+          totalDeliveredOrders: fleetAccounting.total_delivered_orders,
+          totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
+          totalDriverAdvances: fleetAccounting.total_driver_advances,
+          totalNetPayout: fleetAccounting.total_net_payout,
+        } : null,
       },
     }, { status: 200 })
   } catch (err) {
@@ -278,6 +296,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'تعذر تقفيل الوردية' }, { status: 500 })
       }
 
+      // 🛵 Single Source of Truth for Driver Fleet Accounting upon shift close
+      const fleetAccounting = await calculateFleetDriversAccounting(
+        serverSupabase,
+        shift.id,
+        shift.opened_at,
+        new Date().toISOString()
+      ).catch(() => null)
+
       notifyShiftClosed({
         shiftNumber: shift.shift_number,
         closedBy: closed_by.trim(),
@@ -294,6 +320,14 @@ export async function POST(request: NextRequest) {
         takeawayOrdersCount: takeawayOrders.length,
         deliveryTripsCount: trips.length,
         activeDriversCount: uniqueDrivers.size,
+        fleetAccounting: fleetAccounting ? {
+          totalHours: fleetAccounting.total_hours,
+          totalHoursWage: fleetAccounting.total_hours_wage,
+          totalDeliveredOrders: fleetAccounting.total_delivered_orders,
+          totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
+          totalDriverAdvances: fleetAccounting.total_driver_advances,
+          totalNetPayout: fleetAccounting.total_net_payout,
+        } : undefined,
         cancelledOrdersCount: cancelledOrders.length,
         cancelledAmount,
         failedOrdersCount: failedOrders.length,
