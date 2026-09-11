@@ -122,47 +122,12 @@ export async function calculateFleetDriversAccounting(
 
   for (const d of ((drivers as unknown as DriverQueryRow[]) || [])) {
     const allShifts = d.driver_shifts || []
-    // Find open shift or shifts within this daily shift window
-    let currentShift = allShifts.find((s) => s.status === 'open')
-    if (!currentShift) {
-      const dailyShiftsForDriver = allShifts
-        .filter((s) => s.started_at >= dailyShiftOpenedAt && s.started_at <= endTime)
-        .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
-      if (dailyShiftsForDriver.length > 0) {
-        currentShift = dailyShiftsForDriver[0]
-      }
-    }
+    // Find all driver shifts that belong to this daily shift window (or currently open)
+    const targetShifts = allShifts.filter((s) =>
+      s.status === 'open' || (s.started_at >= dailyShiftOpenedAt && s.started_at <= endTime)
+    )
 
-    if (!currentShift) continue
-
-    const startTimeMs = new Date(currentShift.started_at).getTime()
-    const shiftEndMs = currentShift.ended_at ? new Date(currentShift.ended_at).getTime() : nowTime
-    const durationHours = Math.max(0, (shiftEndMs - startTimeMs) / (1000 * 60 * 60))
-    const roundedHours = Math.round(durationHours * 100) / 100
-    const hoursWage = Math.round(roundedHours * hourlyRate * 100) / 100
-
-    const shiftAssignments = (d.order_driver_assignments || []).filter((a) => a.shift_id === currentShift!.id)
-
-    let deliveredCount = 0
-    let commissionTotal = 0
-    const failedOrCancelled: Array<{ order_number: number; status: string; reason: string }> = []
-
-    shiftAssignments.forEach((a) => {
-      const ord = a.orders
-      if (ord) {
-        if (a.status === 'delivered' || ord.status === 'delivered' || ord.status === 'completed') {
-          deliveredCount += 1
-          const fee = Number(ord.delivery_fee || 0)
-          commissionTotal += fee
-        } else if (a.status === 'failed' || a.status === 'cancelled' || ord.status === 'failed' || ord.status === 'cancelled') {
-          failedOrCancelled.push({
-            order_number: ord.order_number,
-            status: ord.status || a.status,
-            reason: ord.failure_reason || ord.cancellation_reason || 'غير محدد',
-          })
-        }
-      }
-    })
+    if (targetShifts.length === 0) continue
 
     const driverNameLower = d.name.trim().toLowerCase()
     const matchedAdvances = advancesList.filter((adv) => {
@@ -170,21 +135,61 @@ export async function calculateFleetDriversAccounting(
       const recLower = adv.recipient_name.trim().toLowerCase()
       return recLower === driverNameLower || recLower.includes(driverNameLower) || driverNameLower.includes(recLower)
     })
-
     const advancesTotal = matchedAdvances.reduce((acc, curr) => acc + curr.amount, 0)
-    const netPayout = Math.round((hoursWage + commissionTotal - advancesTotal) * 100) / 100
+
+    let driverHours = 0
+    let driverHoursWage = 0
+    let driverDeliveredCount = 0
+    let driverCommissionTotal = 0
+    const driverFailedOrCancelled: Array<{ order_number: number; status: string; reason: string }> = []
+
+    // Sort so most recent shift is first (used for primary shift metadata)
+    targetShifts.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
+    const primaryShift = targetShifts[0]
+
+    for (const sh of targetShifts) {
+      const startTimeMs = new Date(sh.started_at).getTime()
+      const shiftEndMs = sh.ended_at ? new Date(sh.ended_at).getTime() : nowTime
+      const durationHours = Math.max(0, (shiftEndMs - startTimeMs) / (1000 * 60 * 60))
+      const roundedHours = Math.round(durationHours * 100) / 100
+      const wage = Math.round(roundedHours * hourlyRate * 100) / 100
+
+      driverHours += roundedHours
+      driverHoursWage += wage
+
+      const shiftAssignments = (d.order_driver_assignments || []).filter((a) => a.shift_id === sh.id)
+
+      shiftAssignments.forEach((a) => {
+        const ord = a.orders
+        if (ord) {
+          if (a.status === 'delivered' || ord.status === 'delivered' || ord.status === 'completed') {
+            driverDeliveredCount += 1
+            const fee = Number(ord.delivery_fee || 0)
+            driverCommissionTotal += fee
+          } else if (a.status === 'failed' || a.status === 'cancelled' || ord.status === 'failed' || ord.status === 'cancelled') {
+            driverFailedOrCancelled.push({
+              order_number: ord.order_number,
+              status: ord.status || a.status,
+              reason: ord.failure_reason || ord.cancellation_reason || 'غير محدد',
+            })
+          }
+        }
+      })
+    }
+
+    const netPayout = Math.round((driverHoursWage + driverCommissionTotal - advancesTotal) * 100) / 100
 
     const accounting: DriverShiftAccounting = {
-      shift_id: currentShift.id,
-      shift_status: currentShift.status as ShiftStatus,
-      started_at: currentShift.started_at,
-      ended_at: currentShift.ended_at || null,
-      duration_hours: roundedHours,
+      shift_id: primaryShift.id,
+      shift_status: primaryShift.status as ShiftStatus,
+      started_at: primaryShift.started_at,
+      ended_at: primaryShift.ended_at || null,
+      duration_hours: Math.round(driverHours * 100) / 100,
       hourly_rate: hourlyRate,
-      hours_wage: hoursWage,
-      delivered_orders_count: deliveredCount,
-      delivery_commission_total: commissionTotal,
-      failed_or_cancelled_orders: failedOrCancelled,
+      hours_wage: Math.round(driverHoursWage * 100) / 100,
+      delivered_orders_count: driverDeliveredCount,
+      delivery_commission_total: Math.round(driverCommissionTotal * 100) / 100,
+      failed_or_cancelled_orders: driverFailedOrCancelled,
       advances_total: advancesTotal,
       advances_list: matchedAdvances.map((adv) => ({
         id: adv.id,
@@ -201,10 +206,10 @@ export async function calculateFleetDriversAccounting(
       accounting,
     })
 
-    totalHours += roundedHours
-    totalHoursWage += hoursWage
-    totalDeliveredOrders += deliveredCount
-    totalCommissions += commissionTotal
+    totalHours += driverHours
+    totalHoursWage += driverHoursWage
+    totalDeliveredOrders += driverDeliveredCount
+    totalCommissions += driverCommissionTotal
     totalAdvances += advancesTotal
     totalNetPayout += netPayout
   }

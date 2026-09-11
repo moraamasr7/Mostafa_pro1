@@ -8,12 +8,15 @@ export const dynamic = 'force-dynamic'
 export async function GET(req: NextRequest) {
   try {
     const serverSupabase = getSupabaseServerClient()
+    const { searchParams } = new URL(req.url)
+    const shiftId = searchParams.get('shift_id')
 
-    const { data: shifts, error: shiftErr } = await serverSupabase
-      .from('daily_shifts')
-      .select('*')
-      .order('opened_at', { ascending: false })
-      .limit(1)
+    let query = serverSupabase.from('daily_shifts').select('*').order('opened_at', { ascending: false }).limit(1)
+    if (shiftId) {
+      query = serverSupabase.from('daily_shifts').select('*').eq('id', shiftId).limit(1)
+    }
+
+    const { data: shifts, error: shiftErr } = await query
 
     if (shiftErr || !shifts || shifts.length === 0) {
       return NextResponse.json({ error: 'لا توجد ورديات مسجلة' }, { status: 404 })

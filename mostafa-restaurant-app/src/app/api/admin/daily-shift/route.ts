@@ -288,12 +288,13 @@ export async function POST(request: NextRequest) {
           notes: notes?.trim() || null,
         })
         .eq('id', shift_id)
+        .eq('status', 'open')
         .select('*')
-        .single()
+        .maybeSingle()
 
-      if (updateErr) {
+      if (updateErr || !closedShift) {
         console.error('Error closing daily shift:', updateErr)
-        return NextResponse.json({ error: 'تعذر تقفيل الوردية' }, { status: 500 })
+        return NextResponse.json({ error: 'الوردية غير موجودة أو تم إغلاقها بالفعل من قِبل مسؤول آخر' }, { status: 409 })
       }
 
       // 🛵 Single Source of Truth for Driver Fleet Accounting upon shift close
