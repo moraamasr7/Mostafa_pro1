@@ -4,6 +4,7 @@ import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
 import { canTransitionStatus, OrderStatus, OrderType } from '@/types/orders'
 import { notifyOrderCancelled } from '@/lib/telegram'
+import { getActiveDailyShift } from '@/lib/shiftGuard'
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,24 +18,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const serverSupabase = getSupabaseServerClient()
+
+    // 🔒 Shift Guard: منع تحديث حالات الطلبات في غياب وردية يومية مفتوحة
+    const shiftCheck = await getActiveDailyShift(serverSupabase)
+    if (!shiftCheck.hasActiveShift) {
+      return NextResponse.json(
+        { error: 'أمان التشغيل: لا توجد وردية يومية مفتوحة حالياً. يرجى فتح الوردية وتحديد العهدة لبدء العمليات.' },
+        { status: 403 }
+      )
+    }
+
     const body = await request.json()
     const { order_id, current_status, new_status, failure_reason, collected_amount } = body
-
-    if (!order_id || typeof order_id !== 'string') {
-      return NextResponse.json(
-        { error: 'مُعرّف الطلب غير صحيح' },
-        { status: 400 }
-      )
-    }
-
-    if (!new_status || typeof new_status !== 'string') {
-      return NextResponse.json(
-        { error: 'الحالة الجديدة مطلوبة' },
-        { status: 400 }
-      )
-    }
-
-    const serverSupabase = getSupabaseServerClient()
 
     if (new_status === 'failed' || (new_status === 'delivered' && failure_reason !== undefined)) {
       if (new_status === 'failed' && (!failure_reason || typeof failure_reason !== 'string' || !failure_reason.trim())) {

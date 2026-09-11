@@ -29,13 +29,27 @@ interface KitchenOrder {
 export default function KitchenDisplayPage() {
   const [orders, setOrders] = useState<KitchenOrder[]>([])
   const [loading, setLoading] = useState(true)
+  const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number } | null>(null)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
 
   const fetchProcessingOrders = async () => {
     setLoading(true)
     try {
-      const res = await fetch('/api/admin/orders?status=processing')
+      const [res, shiftRes] = await Promise.all([
+        fetch('/api/admin/orders?status=processing'),
+        fetch('/api/admin/daily-shift'),
+      ])
+
+      if (shiftRes.ok) {
+        const shiftData = await shiftRes.json()
+        if (shiftData.hasActiveShift && shiftData.activeShift) {
+          setDailyShift(shiftData.activeShift)
+        } else {
+          setDailyShift(null)
+        }
+      }
+
       if (res.ok) {
         const data = await res.json()
         setOrders(data.orders || [])
@@ -120,6 +134,24 @@ export default function KitchenDisplayPage() {
       <OpsNavbar title="شاشة المطبخ والتحضير" subtitle="عرض طلبات قيد التجهيز فقط — مخصصة للطهي" />
 
       <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
+        {!dailyShift && !loading && (
+          <div className="bg-red-950/80 border-2 border-red-700 text-red-200 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs font-bold shadow-md">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">⚠️</span>
+              <div>
+                <p className="text-sm font-black text-red-300">الوردية اليومية للمطعم مغلقة</p>
+                <p className="text-xs text-red-400 font-medium">المطبخ يعمل في وضع المشاهدة فقط. لا يمكن تحديث حالات الطلبات إلى (جاهز) قبل فتح الوردية اليومية من لوحة التحكم.</p>
+              </div>
+            </div>
+            <a
+              href="/shift-control"
+              className="bg-red-700 hover:bg-red-600 text-white font-black px-4 py-2 rounded-xl transition-all shadow-sm whitespace-nowrap"
+            >
+              فتح الوردية 🔓
+            </a>
+          </div>
+        )}
+
         <div className="flex flex-wrap items-center justify-between gap-4 bg-zinc-900 border border-zinc-800 p-4 rounded-2xl">
           <div className="flex items-center gap-3">
             <span className="flex h-4 w-4 relative">

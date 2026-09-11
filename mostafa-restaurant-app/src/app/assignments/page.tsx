@@ -64,6 +64,7 @@ export default function AdminAssignmentsPage() {
 
   const [loading, setLoading] = useState(true)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number; opened_by: string } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
@@ -77,12 +78,13 @@ export default function AdminAssignmentsPage() {
     setActionError(null)
 
     try {
-      const [ordersRes, driversRes] = await Promise.all([
+      const [ordersRes, driversRes, shiftRes] = await Promise.all([
         fetch('/api/admin/orders?status=all'),
         fetch('/api/admin/drivers'),
+        fetch('/api/admin/daily-shift'),
       ])
 
-      if (ordersRes.status === 401 || driversRes.status === 401) {
+      if (ordersRes.status === 401 || driversRes.status === 401 || shiftRes.status === 401) {
         setIsAuthenticated(false)
         setLoading(false)
         setIsSyncing(false)
@@ -91,9 +93,15 @@ export default function AdminAssignmentsPage() {
 
       const ordersData = await ordersRes.json()
       const driversData = await driversRes.json()
+      const shiftData = await shiftRes.json()
 
       if (ordersRes.ok && driversRes.ok) {
         setIsAuthenticated(true)
+        if (shiftData.hasActiveShift && shiftData.activeShift) {
+          setDailyShift(shiftData.activeShift)
+        } else {
+          setDailyShift(null)
+        }
         const allOrders: DeliveryOrder[] = (ordersData.orders || []).filter(
           (o: DeliveryOrder) => o.order_type === 'delivery'
         )
@@ -335,6 +343,24 @@ export default function AdminAssignmentsPage() {
       <OpsNavbar title="تعيين طلبات الدليفري للطيارين" subtitle="ربط الطلبات الجاهزة بالمطبخ بالطيارين المتاحين بالفرع" />
 
       <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
+        {!dailyShift && !loading && (
+          <div className="bg-red-50 border-2 border-red-300 text-red-950 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs font-bold shadow-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">⚠️</span>
+              <div>
+                <p className="text-sm font-black text-red-900">الوردية اليومية مغلقة حالياً</p>
+                <p className="text-xs text-red-700 font-medium">لا يمكن إسناد وتعيين الطلبات للطيارين بدون فتح الوردية اليومية للمطعم أولاً لضمان ربط الحسابات.</p>
+              </div>
+            </div>
+            <Link
+              href="/shift-control"
+              className="bg-red-600 hover:bg-red-700 text-white font-black px-4 py-2 rounded-xl transition-all shadow-sm whitespace-nowrap"
+            >
+              الانتقال لفتح الوردية 🔓
+            </Link>
+          </div>
+        )}
+
         {actionError && (
           <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-2xl flex items-center justify-between text-xs font-bold">
             <span>⚠️ {actionError}</span>

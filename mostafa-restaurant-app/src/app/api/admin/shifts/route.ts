@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
+import { getActiveDailyShift } from '@/lib/shiftGuard'
 
 export const dynamic = 'force-dynamic'
 
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { action, driver_id } = body
+    const { action, driver_id, allow_reopen, reopen_reason } = body
 
     if (!driver_id || typeof driver_id !== 'string') {
       return NextResponse.json(
@@ -30,6 +31,37 @@ export async function POST(request: NextRequest) {
     const serverSupabase = getSupabaseServerClient()
 
     if (action === 'start') {
+      // 🔒 Shift Guard: منع فتح ورديات الطيارين إذا كانت وردية المطعم العامة مغلقة
+      const shiftCheck = await getActiveDailyShift(serverSupabase)
+      if (!shiftCheck.hasActiveShift || !shiftCheck.openedAt) {
+        return NextResponse.json(
+          { error: 'أمان التشغيل: لا يمكن بدء وردية للطيار لعدم وجود وردية مطعم مفتوحة حالياً. افتح الوردية اليومية أولاً.' },
+          { status: 403 }
+        )
+      }
+
+      // 🔒 فحص عدم تكرار فتح وردية لنفس الطيار داخل نفس الوردية اليومية للمطعم
+      const { data: previousShifts, error: prevErr } = await serverSupabase
+        .from('driver_shifts')
+        .select('id, started_at, ended_at, status')
+        .eq('driver_id', driver_id)
+        .gte('started_at', shiftCheck.openedAt)
+        .order('started_at', { ascending: false })
+
+      if (!prevErr && previousShifts && previousShifts.length > 0) {
+        const closedShifts = previousShifts.filter((s) => s.status === 'closed')
+        if (closedShifts.length > 0 && !allow_reopen) {
+          return NextResponse.json(
+            {
+              error: 'هذا الطيار سجل بالفعل وردية وانتهت خلال وردية اليوم الحالية. فتح وردية ثانية استثنائية يتطلب تأكيداً وموافقة صريحة.',
+              requires_override: true,
+              closed_shift_count: closedShifts.length,
+            },
+            { status: 409 }
+          )
+        }
+      }
+
       const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('start_driver_shift_secure', {
         p_driver_id: driver_id,
       })

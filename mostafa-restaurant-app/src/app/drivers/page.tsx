@@ -34,9 +34,10 @@ export default function AdminDriversPage() {
 
   const [drivers, setDrivers] = useState<DriverExtended[]>([])
   const [loading, setLoading] = useState(true)
+  const [busyDriverId, setBusyDriverId] = useState<string | null>(null)
+  const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number; opened_by: string } | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
-  const [busyDriverId, setBusyDriverId] = useState<string | null>(null)
 
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
@@ -49,16 +50,26 @@ export default function AdminDriversPage() {
     setActionError(null)
 
     try {
-      const res = await fetch('/api/admin/drivers')
-      if (res.status === 401) {
+      const [res, shiftRes] = await Promise.all([
+        fetch('/api/admin/drivers'),
+        fetch('/api/admin/daily-shift'),
+      ])
+      if (res.status === 401 || shiftRes.status === 401) {
         setIsAuthenticated(false)
         setLoading(false)
         return
       }
 
       const data = await res.json()
+      const shiftData = await shiftRes.json()
+
       if (res.ok) {
         setIsAuthenticated(true)
+        if (shiftData.hasActiveShift && shiftData.activeShift) {
+          setDailyShift(shiftData.activeShift)
+        } else {
+          setDailyShift(null)
+        }
         const rawDrivers: Driver[] = data.drivers || []
 
         const { data: openShifts } = await supabase
@@ -186,7 +197,7 @@ export default function AdminDriversPage() {
     }
   }
 
-  const handleShiftAction = async (driverId: string, action: 'start' | 'end') => {
+  const handleShiftAction = async (driverId: string, action: 'start' | 'end', allowReopen = false) => {
     setBusyDriverId(driverId)
     setActionError(null)
     setActionSuccess(null)
@@ -195,13 +206,24 @@ export default function AdminDriversPage() {
       const res = await fetch('/api/admin/shifts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ driver_id: driverId, action }),
+        body: JSON.stringify({
+          driver_id: driverId,
+          action,
+          allow_reopen: allowReopen,
+        }),
       })
 
       const data = await res.json()
       if (res.ok) {
         setActionSuccess(data.message)
         fetchDriversData(true)
+      } else if (res.status === 409 && data.requires_override) {
+        const confirmReopen = window.confirm(
+          `⚠️ تنبيه رقابي:\n${data.error}\n\nهل أنت متأكد من فتح وردية ثانية استثنائية لهذا الطيار الآن؟`
+        )
+        if (confirmReopen) {
+          await handleShiftAction(driverId, 'start', true)
+        }
       } else {
         setActionError(data.error || 'فشل تنفيذ إجراء الوردية')
       }
@@ -265,6 +287,24 @@ export default function AdminDriversPage() {
       <OpsNavbar title="إدارة طاقم طيارين الدليفري والورديات" subtitle="متابعة حالة الطيارين وفتح وإغلاق الورديات التشغيلية" />
 
       <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
+        {!dailyShift && !loading && (
+          <div className="bg-red-50 border-2 border-red-300 text-red-950 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs font-bold shadow-sm">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">⚠️</span>
+              <div>
+                <p className="text-sm font-black text-red-900">الوردية اليومية للمطعم مغلقة</p>
+                <p className="text-xs text-red-700 font-medium">لا يمكن فتح ورديات للطيارين إلا بعد فتح الوردية اليومية العامة للمطعم لضمان إسناد الطلبات ومطابقة الحسابات.</p>
+              </div>
+            </div>
+            <Link
+              href="/shift-control"
+              className="bg-red-600 hover:bg-red-700 text-white font-black px-4 py-2 rounded-xl transition-all shadow-sm whitespace-nowrap"
+            >
+              الانتقال لفتح الوردية 🔓
+            </Link>
+          </div>
+        )}
+
         {actionError && (
           <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-2xl flex items-center justify-between text-xs font-bold">
             <span>⚠️ {actionError}</span>

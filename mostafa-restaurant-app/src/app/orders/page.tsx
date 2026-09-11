@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { OrderStatus, STATUS_UI_CONFIG } from '@/types/orders'
 import { Driver } from '@/types/drivers'
@@ -78,6 +79,8 @@ export default function AdminOrdersPage() {
   const [newDriverPhone, setNewDriverPhone] = useState('')
   const [isAddingDriver, setIsAddingDriver] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
+  const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number; opened_by: string } | null>(null)
+  const [hasCheckedShift, setHasCheckedShift] = useState(false)
 
   const fetchOrdersAndDrivers = async (tabFilter = activeTab, isBackground = false) => {
     if (!isBackground && orders.length === 0) {
@@ -87,12 +90,13 @@ export default function AdminOrdersPage() {
     }
 
     try {
-      const [ordersRes, driversRes] = await Promise.all([
+      const [ordersRes, driversRes, shiftRes] = await Promise.all([
         fetch(`/api/admin/orders?status=${tabFilter}`),
         fetch('/api/admin/drivers'),
+        fetch('/api/admin/daily-shift'),
       ])
 
-      if (ordersRes.status === 401 || driversRes.status === 401) {
+      if (ordersRes.status === 401 || driversRes.status === 401 || shiftRes.status === 401) {
         setIsAuthenticated(false)
         setLoading(false)
         setIsSyncing(false)
@@ -101,11 +105,18 @@ export default function AdminOrdersPage() {
 
       const ordersData = await ordersRes.json()
       const driversData = await driversRes.json()
+      const shiftData = await shiftRes.json()
 
       if (ordersRes.ok && driversRes.ok) {
         setIsAuthenticated(true)
         setOrders(ordersData.orders || [])
         setDrivers(driversData.drivers || [])
+        if (shiftData.hasActiveShift && shiftData.activeShift) {
+          setDailyShift(shiftData.activeShift)
+        } else {
+          setDailyShift(null)
+        }
+        setHasCheckedShift(true)
       } else {
         if (!isBackground) {
           setActionError('حدث خطأ أثناء تحميل البيانات')
@@ -245,7 +256,7 @@ export default function AdminOrdersPage() {
     }
   }
 
-  const handleShiftAction = async (driverId: string, action: 'start' | 'end') => {
+  const handleShiftAction = async (driverId: string, action: 'start' | 'end', allowReopen = false) => {
     setActionError(null)
     setActionSuccess(null)
 
@@ -253,18 +264,28 @@ export default function AdminOrdersPage() {
       const res = await fetch('/api/admin/shifts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ driver_id: driverId, action }),
+        body: JSON.stringify({
+          driver_id: driverId,
+          action,
+          allow_reopen: allowReopen,
+        }),
       })
 
       const data = await res.json()
 
-      if (!res.ok) {
+      if (res.ok) {
+        setActionSuccess(data.message)
+        fetchOrdersAndDrivers(activeTab, true)
+      } else if (res.status === 409 && data.requires_override) {
+        const confirmReopen = window.confirm(
+          `⚠️ تنبيه رقابي:\n${data.error}\n\nهل أنت متأكد من فتح وردية ثانية استثنائية لهذا الطيار الآن؟`
+        )
+        if (confirmReopen) {
+          await handleShiftAction(driverId, 'start', true)
+        }
+      } else {
         setActionError(data.error || 'فشل إجراء الوردية')
-        return
       }
-
-      setActionSuccess(data.message)
-      fetchOrdersAndDrivers(activeTab)
     } catch {
       setActionError('تعذر الاتصال بالسيرفر')
     }
@@ -483,12 +504,30 @@ export default function AdminOrdersPage() {
               </span>
             )}
           </div>
-          <button
-            onClick={() => setShowDriverPanel(!showDriverPanel)}
-            className="bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
-          >
-            🛵 شريط الطيارين ({drivers.filter((d) => d.active_shift_id).length} نشط)
-          </button>
+          <div className="flex items-center gap-2">
+            {hasCheckedShift && (
+              dailyShift ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1 rounded-xl">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                  وردية #{dailyShift.shift_number} مفتوحة ({dailyShift.opened_by})
+                </span>
+              ) : (
+                <Link
+                  href="/shift-control"
+                  className="inline-flex items-center gap-1.5 text-xs font-black text-white bg-red-600 hover:bg-red-700 px-3 py-1 rounded-xl shadow-sm transition-colors animate-bounce"
+                >
+                  <span>⚠️</span>
+                  <span>الوردية مغلقة — اضغط لفتح الوردية</span>
+                </Link>
+              )
+            )}
+            <button
+              onClick={() => setShowDriverPanel(!showDriverPanel)}
+              className="bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+            >
+              🛵 شريط الطيارين ({drivers.filter((d) => d.active_shift_id).length} نشط)
+            </button>
+          </div>
         </div>
       </div>
 

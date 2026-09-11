@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
+import { getActiveDailyShift } from '@/lib/shiftGuard'
 
 export const dynamic = 'force-dynamic'
 
@@ -17,10 +18,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    const serverSupabase = getSupabaseServerClient()
+
+    // 🔒 Shift Guard: منع تعيين وإدارة الطيارين في غياب وردية يومية مفتوحة
+    const shiftCheck = await getActiveDailyShift(serverSupabase)
+    if (!shiftCheck.hasActiveShift) {
+      return NextResponse.json(
+        { error: 'أمان التشغيل: لا توجد وردية يومية مفتوحة حالياً. يرجى فتح الوردية وتحديد العهدة لبدء العمليات.' },
+        { status: 403 }
+      )
+    }
+
     const body = await request.json()
     const { action, order_id, order_ids, driver_id, new_status } = body
-
-    const serverSupabase = getSupabaseServerClient()
 
     if (action === 'assign') {
       if (!driver_id || typeof driver_id !== 'string') {

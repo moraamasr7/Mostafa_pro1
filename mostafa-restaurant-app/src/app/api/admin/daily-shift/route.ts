@@ -179,10 +179,10 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'الوردية غير موجودة أو تم إغلاقها بالفعل' }, { status: 400 })
       }
 
-      const [ordersRes, expensesRes, tripsRes, driversRes] = await Promise.all([
+      const [ordersRes, expensesRes, tripsRes, driversRes, openDriverShiftsRes] = await Promise.all([
         serverSupabase
           .from('orders')
-          .select('total_amount, status, order_type')
+          .select('id, order_number, total_amount, status, order_type')
           .gte('created_at', shift.opened_at),
         serverSupabase
           .from('shift_expenses')
@@ -190,18 +190,52 @@ export async function POST(request: NextRequest) {
           .eq('shift_id', shift.id),
         serverSupabase
           .from('delivery_trips')
-          .select('id, status')
+          .select('id, trip_number, status')
           .gte('created_at', shift.opened_at),
         serverSupabase
           .from('driver_shifts')
           .select('driver_id')
           .gte('started_at', shift.opened_at),
+        serverSupabase
+          .from('driver_shifts')
+          .select('id, driver_id, drivers(name)')
+          .eq('status', 'open'),
       ])
 
       const orders = ordersRes.data || []
       const expenses = expensesRes.data || []
       const trips = tripsRes.data || []
       const driverShifts = driversRes.data || []
+      const openDriverShifts = openDriverShiftsRes.data || []
+
+      // 🔒 التحقق التشغيلي الأول: التأكد من حسم جميع طلبات الوردية (لا توجد طلبات معلقة قيد التحضير أو في الطريق)
+      const activeUnresolvedOrders = orders.filter(o =>
+        ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+      )
+      if (activeUnresolvedOrders.length > 0) {
+        return NextResponse.json({
+          error: `أمان العمليات: لا يمكن تقفيل الوردية لوجود (${activeUnresolvedOrders.length}) طلبات نشطة لم تُحسم بعد (أرقام: ${activeUnresolvedOrders.slice(0, 5).map(o => '#' + o.order_number).join(', ')}${activeUnresolvedOrders.length > 5 ? '...' : ''}). يجب تسليمها أو إلغاؤها أولاً.`
+        }, { status: 400 })
+      }
+
+      // 🔒 التحقق التشغيلي الثاني: التأكد من إغلاق كافة رحلات التوصيل
+      const openTrips = trips.filter(t => !['completed', 'cancelled'].includes(t.status))
+      if (openTrips.length > 0) {
+        return NextResponse.json({
+          error: `أمان العمليات: يوجد (${openTrips.length}) رحلات دليفري نشطة لم تُغلق بعد. يجب تسوية وتوريد رحلات الطيارين أولاً.`
+        }, { status: 400 })
+      }
+
+      // 🔒 التحقق التشغيلي الثالث: التأكد من إنهاء ورديات الطيارين المفتوحة
+      if (openDriverShifts.length > 0) {
+        interface DriverJoinRow { drivers?: { name?: string } }
+        const openNames = (openDriverShifts as unknown as DriverJoinRow[])
+          .map(ds => ds.drivers?.name || 'طيار')
+          .join(', ')
+        return NextResponse.json({
+          error: `أمان العمليات: يوجد (${openDriverShifts.length}) ورديات طيارين مفتوحة حالياً (${openNames}). يجب إنهاء وردياتهم وتصفية عهدهم أولاً قبل تقفيل وردية المحل.`
+        }, { status: 400 })
+      }
 
       const completedOrders = orders.filter(o => ['completed', 'delivered'].includes(o.status))
       const totalSales = completedOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
