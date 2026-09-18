@@ -105,79 +105,80 @@ async function runTask4BDryRun() {
     // 3. Menu Item & Variant Loading
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 3: Menu Catalog Verification ---')
-    const { data: variant } = await supabase
+    const { data: variants } = await supabase
       .from('item_variants')
-      .select('id, variant_name, price, menu_item_id, menu_items(name)')
+      .select('id, variant_name, price')
+      .eq('is_available', true)
       .limit(1)
-      .single()
 
-    if (!variant) throw new Error('No menu item variant available')
-    const itemPrice = Number(variant.price) || 250
-    const itemName = (variant.menu_items as any)?.name || 'طبق مشكل كباب وكفتة'
-    pass('Catalog Variant Loaded', `Item: ${itemName} - ${variant.variant_name} (${itemPrice} EGP)`)
+    if (!variants || variants.length === 0) throw new Error('No available variants found in DB')
+    const sampleVariant = variants[0]
+    pass('Catalog Variant Loaded', `Variant ID: ${sampleVariant.id} - ${sampleVariant.variant_name} (${sampleVariant.price} EGP)`)
 
     // ------------------------------------------------------------------------
     // 4. Order 1: Takeaway Cash Order Creation & Kitchen Lifecycle
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 4: Order Lifecycle — Takeaway Order ---')
-    const { data: takeawayOrder, error: o1Err } = await supabase
-      .from('orders')
-      .insert({
-        daily_shift_id: shiftId,
-        order_type: 'takeaway',
-        customer_name: 'أحمد محمود (تجريبي)',
-        customer_phone: '01012345678',
-        payment_method: 'cash',
-        payment_status: 'paid',
-        status: 'pending',
-        subtotal: itemPrice,
-        total_amount: itemPrice,
-        notes: 'بدون شطة - تجربة وردية كاملة'
-      })
-      .select('*')
-      .single()
+    const { data: mOrderData, error: mOrderErr } = await supabase.rpc('create_manual_order_secure', {
+      p_customer_name: 'أحمد محمود (تجريبي تيك أواي)',
+      p_customer_phone: '01012345678',
+      p_order_type: 'takeaway',
+      p_payment_method: 'cash',
+      p_delivery_address: null,
+      p_notes: 'بدون شطة - تجربة وردية كاملة',
+      p_items: [{ variant_id: sampleVariant.id, quantity: 1 }],
+      p_daily_shift_id: shiftId,
+      p_created_by_staff: cashierUser.full_name,
+    })
 
-    if (o1Err) throw o1Err
-    pass('Takeaway Order Created', `Order #${takeawayOrder.order_number} (Amount: ${takeawayOrder.total_amount} EGP) anchored to daily_shift_id: ${shiftId}`)
+    if (mOrderErr || !mOrderData || mOrderData.length === 0) throw mOrderErr || new Error('Failed to create manual order')
+    const takeawayOrderId = mOrderData[0].order_id
+    const takeawayOrderNum = mOrderData[0].order_number
+    pass('Takeaway Order Created', `Order #${takeawayOrderNum} (ID: ${takeawayOrderId}) anchored to daily_shift_id: ${shiftId}`)
 
     // Kitchen Lifecycle for Order 1: pending -> processing -> ready -> completed
-    await supabase.from('orders').update({ status: 'processing' }).eq('id', takeawayOrder.id)
-    await supabase.from('orders').update({ status: 'ready' }).eq('id', takeawayOrder.id)
-    await supabase.from('orders').update({ status: 'completed' }).eq('id', takeawayOrder.id)
-    pass('Takeaway Order Completed', `Order #${takeawayOrder.order_number} transitioned: pending ➔ processing ➔ ready ➔ completed`)
+    await supabase.from('orders').update({ status: 'processing' }).eq('id', takeawayOrderId)
+    await supabase.from('orders').update({ status: 'ready' }).eq('id', takeawayOrderId)
+    await supabase.from('orders').update({ status: 'completed' }).eq('id', takeawayOrderId)
+    pass('Takeaway Order Completed', `Order #${takeawayOrderNum} transitioned: pending ➔ processing ➔ ready ➔ completed`)
 
     // ------------------------------------------------------------------------
-    // 5. Order 2: Delivery Order Creation
+    // 5. Order 2: Online Delivery Order Creation
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 5: Order Lifecycle — Delivery Order ---')
-    const deliveryFee = 20
-    const deliveryTotal = itemPrice + deliveryFee
-    const { data: deliveryOrder, error: o2Err } = await supabase
+    const idemKey = `dryrun_order_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`
+    const { data: onOrderData, error: onOrderErr } = await supabase.rpc('create_order_secure', {
+      p_customer_name: 'طارق عبد الله (تجريبي دليفري)',
+      p_customer_phone: '01198765432',
+      p_delivery_address: 'مدينة نصر - الحي السابع - عمارة 12',
+      p_order_type: 'delivery',
+      p_payment_method: 'cash',
+      p_payment_receipt_url: 'cash_cod',
+      p_notes: 'رن الجرس مرتين - تجربة وردية',
+      p_idempotency_key: idemKey,
+      p_items: [{ variant_id: sampleVariant.id, quantity: 1 }],
+    })
+
+    if (onOrderErr || !onOrderData || onOrderData.length === 0) throw onOrderErr || new Error('Failed to create online order')
+    const deliveryOrderId = onOrderData[0].order_id
+    const deliveryOrderNum = onOrderData[0].order_number
+
+    // Ensure daily_shift_id is explicitly set
+    await supabase.from('orders').update({ daily_shift_id: shiftId }).eq('id', deliveryOrderId)
+
+    const { data: loadedDeliveryOrder } = await supabase
       .from('orders')
-      .insert({
-        daily_shift_id: shiftId,
-        order_type: 'delivery',
-        customer_name: 'طارق عبد الله (تجريبي)',
-        customer_phone: '01198765432',
-        delivery_address: 'مدينة نصر - الحي السابع - عمارة 12',
-        delivery_fee: deliveryFee,
-        subtotal: itemPrice,
-        total_amount: deliveryTotal,
-        payment_method: 'cash',
-        payment_status: 'pending',
-        status: 'pending',
-        notes: 'رن الجرس مرتين'
-      })
-      .select('*')
+      .select('id, order_number, total_amount, status')
+      .eq('id', deliveryOrderId)
       .single()
 
-    if (o2Err) throw o2Err
-    pass('Delivery Order Created', `Order #${deliveryOrder.order_number} (Total: ${deliveryTotal} EGP with ${deliveryFee} EGP delivery fee)`)
+    const deliveryTotal = Number(loadedDeliveryOrder?.total_amount) || Number(sampleVariant.price)
+    pass('Delivery Order Created', `Order #${deliveryOrderNum} (ID: ${deliveryOrderId}, Total: ${deliveryTotal} EGP)`)
 
     // Transition delivery order to ready
-    await supabase.from('orders').update({ status: 'processing' }).eq('id', deliveryOrder.id)
-    await supabase.from('orders').update({ status: 'ready' }).eq('id', deliveryOrder.id)
-    pass('Delivery Order Ready in Kitchen', `Order #${deliveryOrder.order_number} prepared and marked ready for driver assignment`)
+    await supabase.from('orders').update({ status: 'processing' }).eq('id', deliveryOrderId)
+    await supabase.from('orders').update({ status: 'ready' }).eq('id', deliveryOrderId)
+    pass('Delivery Order Ready in Kitchen', `Order #${deliveryOrderNum} prepared in kitchen and marked ready for driver assignment`)
 
     // ------------------------------------------------------------------------
     // 6. Driver Roster & Active Driver Shift
@@ -242,12 +243,12 @@ async function runTask4BDryRun() {
       status: 'assigned',
       assigned_driver_id: assignedDriver.id,
       trip_number: trip.trip_number
-    }).eq('id', deliveryOrder.id)
+    }).eq('id', deliveryOrderId)
 
     // Dispatch trip
     await supabase.from('delivery_trips').update({ status: 'out_for_delivery' }).eq('id', trip.id)
-    await supabase.from('orders').update({ status: 'out_for_delivery' }).eq('id', deliveryOrder.id)
-    pass('Trip Dispatched', `Trip #${trip.trip_number} out for delivery with Order #${deliveryOrder.order_number}`)
+    await supabase.from('orders').update({ status: 'out_for_delivery' }).eq('id', deliveryOrderId)
+    pass('Trip Dispatched', `Trip #${trip.trip_number} out for delivery with Order #${deliveryOrderNum}`)
 
     // ------------------------------------------------------------------------
     // 8. Delivery Completion & Driver Custody Invariant
@@ -255,8 +256,9 @@ async function runTask4BDryRun() {
     console.log('\n--- Phase 8: Delivery Completion & Cash Custody Transition ---')
     await supabase.from('orders').update({
       status: 'delivered',
-      payment_status: 'collected'
-    }).eq('id', deliveryOrder.id)
+      collection_status: 'collected',
+      collected_amount: deliveryTotal,
+    }).eq('id', deliveryOrderId)
 
     await supabase.from('delivery_trips').update({
       collected_amount: deliveryTotal
@@ -264,7 +266,7 @@ async function runTask4BDryRun() {
 
     // Check accounting: Driver Custody MUST be > 0
     let interimAcct = await calculateDailyShiftAccounting(supabase, shiftId)
-    pass('Delivery Completed', `Order #${deliveryOrder.order_number} marked delivered. Driver collected: ${deliveryTotal} EGP`)
+    pass('Delivery Completed', `Order #${deliveryOrderNum} marked delivered. Driver collected: ${deliveryTotal} EGP`)
     
     guard('Unsettled Driver Custody Guard', `Shift close BLOCKED because driver ${assignedDriver.name} holds ${interimAcct.driver_custody_cash} EGP custody cash`)
 
@@ -361,7 +363,7 @@ async function runTask4BDryRun() {
     console.log(`     System Expected Cash:   ${finalAcct.system_expected_cash} EGP`)
 
     if (finalAcct.driver_custody_cash !== 0) throw new Error(`Expected 0 driver custody cash after settlement, found: ${finalAcct.driver_custody_cash}`)
-    pass('Accounting Verified', `System Expected Cash = Initial(${finalAcct.initial_cash}) + CashSales(${finalAcct.cash_sales}) - Expenses(${finalAcct.total_expenses}) = ${finalAcct.system_expected_cash} EGP`)
+    pass('Accounting Invariants Verified', `System Expected Cash = Initial(${finalAcct.initial_cash}) + CashSales(${finalAcct.cash_sales}) - Expenses(${finalAcct.total_expenses}) = ${finalAcct.system_expected_cash} EGP`)
 
     // ------------------------------------------------------------------------
     // 12. Operating Hours & Role Close Guards
