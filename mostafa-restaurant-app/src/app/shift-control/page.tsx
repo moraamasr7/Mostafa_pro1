@@ -7,19 +7,13 @@ import { STATUS_UI_CONFIG, OrderStatus } from '@/types/orders'
 import Link from 'next/link'
 import OpsNavbar from '@/components/OpsNavbar'
 import GlobalShiftBar from '@/components/GlobalShiftBar'
-
-interface OrderItem {
-  id: string
-  quantity: number
-  unit_price: number
-  subtotal: number
-  item_variants?: {
-    variant_name: string
-    menu_items?: {
-      name: string
-    }
-  }
-}
+import { MoneyDisplay } from '@/components/ui/MoneyDisplay'
+import { Badge } from '@/components/ui/Badge'
+import { Card } from '@/components/ui/Card'
+import { Button } from '@/components/ui/Button'
+import { TabNav, TabItem } from '@/components/ui/TabNav'
+import { Modal } from '@/components/ui/Modal'
+import { Input } from '@/components/ui/Input'
 
 interface ShiftOrder {
   id: string
@@ -29,38 +23,8 @@ interface ShiftOrder {
   delivery_address?: string
   order_type: 'takeaway' | 'delivery' | 'dine_in'
   status: OrderStatus
+  payment_method?: string
   total_amount: number
-  notes?: string
-  created_at: string
-  order_items?: OrderItem[]
-  assigned_driver?: {
-    driver_name: string
-    assignment_status: string
-  } | null
-  trip_number?: number | null
-}
-
-interface DriverRoster {
-  id: string
-  name: string
-  is_active: boolean
-  status: 'offline' | 'available' | 'busy'
-  active_shift_id?: string
-  current_trip_number?: number | null
-  current_trip_count?: number
-}
-
-interface DeliveryTripOverview {
-  id: string
-  trip_number: number
-  driver_name: string
-  status: string
-  expected_amount: number
-  collected_amount: number
-  order_count: number
-  delivered_count: number
-  failed_count: number
-  in_progress_count: number
   created_at: string
 }
 
@@ -112,292 +76,193 @@ interface StaffProfileItem {
   role: string
 }
 
-type ShiftHubTab = 'reconciliation' | 'expenses' | 'orders' | 'fleet' | 'readiness'
-
-const STAFF_ROLE_LABELS: Record<string, string> = {
-  owner: 'مالك المطعم',
-  manager: 'مشرف / مدير',
-  cashier: 'كاشير',
-  kitchen: 'شيف / مطبخ',
-  driver: 'طيار',
+interface DriverItem {
+  id: string
+  name: string
+  status: string
+  is_active: boolean
 }
 
-export default function ShiftControlAndCashPage() {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
-  const [passcode, setPasscode] = useState('')
-  const [loginError, setLoginError] = useState('')
-  const [isLoggingIn, setIsLoggingIn] = useState(false)
+type ShiftHubTab = 'reconciliation' | 'expenses' | 'orders' | 'readiness'
 
-  // Core Data
-  const [dailyShift, setDailyShift] = useState<ActiveDailyShift | null>(null)
-  const [expenses, setExpenses] = useState<ShiftExpenseItem[]>([])
-  const [orders, setOrders] = useState<ShiftOrder[]>([])
-  const [drivers, setDrivers] = useState<DriverRoster[]>([])
-  const [trips, setTrips] = useState<DeliveryTripOverview[]>([])
-  const [staffList, setStaffList] = useState<StaffProfileItem[]>([])
-  const [currentStaff, setCurrentStaff] = useState<StaffProfileItem | null>(null)
-  const [operatingStatus, setOperatingStatus] = useState<OperatingHoursResult | null>(null)
+const DENOMINATIONS = [200, 100, 50, 20, 10, 5, 1] as const
 
-  // UI State
+export default function ShiftControlPage() {
   const [loading, setLoading] = useState(true)
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [isOnline, setIsOnline] = useState(true)
+  const [activeShift, setActiveShift] = useState<ActiveDailyShift | null>(null)
+  const [lastClosedShift, setLastClosedShift] = useState<any | null>(null)
+  const [currentStaff, setCurrentStaff] = useState<StaffProfileItem | null>(null)
   const [activeTab, setActiveTab] = useState<ShiftHubTab>('reconciliation')
-  const [orderFilter, setOrderFilter] = useState<'all' | 'kitchen' | 'ready' | 'delivery' | 'takeaway'>('all')
+
+  // Orders & Expenses State
+  const [shiftOrders, setShiftOrders] = useState<ShiftOrder[]>([])
+  const [shiftExpenses, setShiftExpenses] = useState<ShiftExpenseItem[]>([])
+  const [staffList, setStaffList] = useState<StaffProfileItem[]>([])
+  const [driverList, setDriverList] = useState<DriverItem[]>([])
+  const [operatingHours, setOperatingHours] = useState<OperatingHoursResult | null>(null)
+
+  // Feedback & Action states
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Modals state
-  const [showOpenShiftModal, setShowOpenShiftModal] = useState(false)
-  const [openShiftStaff, setOpenShiftStaff] = useState('')
-  const [customStaffName, setCustomStaffName] = useState('')
-  const [initialCashInput, setInitialCashInput] = useState('500')
-  const [openShiftNotes, setOpenShiftNotes] = useState('')
-  const [isSubmittingShift, setIsSubmittingShift] = useState(false)
+  // Open Shift Form
+  const [initialCashInput, setInitialCashInput] = useState<string>('0')
+  const [openShiftNotes, setOpenShiftNotes] = useState<string>('')
 
-  const [showCloseShiftModal, setShowCloseShiftModal] = useState(false)
-  const [actualCashInput, setActualCashInput] = useState('')
-  const [closeShiftNotes, setCloseShiftNotes] = useState('')
+  // Cash Reconciliation State
+  const [cashCounts, setCashCounts] = useState<Record<number, number>>({
+    200: 0,
+    100: 0,
+    50: 0,
+    20: 0,
+    10: 0,
+    5: 0,
+    1: 0,
+  })
+  const [manualCountOverride, setManualCountOverride] = useState<string>('')
+  const [useManualCount, setUseManualCount] = useState<boolean>(false)
 
-  const [showExpenseModal, setShowExpenseModal] = useState(false)
-  const [expenseType, setExpenseType] = useState<'advance' | 'operational'>('advance')
-  const [selectedPersonKey, setSelectedPersonKey] = useState<string>('')
-  const [advanceCustomName, setAdvanceCustomName] = useState('')
-  const [advanceReason, setAdvanceReason] = useState('')
-  const [expenseCategory, setExpenseCategory] = useState('مشتريات خضار ومستلزمات')
-  const [expenseAmount, setExpenseAmount] = useState('')
-  const [expenseDesc, setExpenseDesc] = useState('')
-  const [expenseRecipient, setExpenseRecipient] = useState('')
-  const [expenseRecordedBy, setExpenseRecordedBy] = useState('')
-  const [isSubmittingExpense, setIsSubmittingExpense] = useState(false)
+  // Modals
+  const [showExpenseModal, setShowExpenseModal] = useState<boolean>(false)
+  const [expenseCategory, setExpenseCategory] = useState<string>('مصروف عام')
+  const [expenseAmount, setExpenseAmount] = useState<string>('')
+  const [expenseRecipient, setExpenseRecipient] = useState<string>('')
+  const [expenseSelectedDriverId, setExpenseSelectedDriverId] = useState<string>('')
+  const [expenseSelectedStaffId, setExpenseSelectedStaffId] = useState<string>('')
+  const [expenseDescription, setExpenseDescription] = useState<string>('')
 
-  // Debounce ref for Realtime synchronization
+  const [showCloseShiftModal, setShowCloseShiftModal] = useState<boolean>(false)
+  const [closeShiftNotes, setCloseShiftNotes] = useState<string>('')
+
+  // Search in orders
+  const [orderSearchQuery, setOrderSearchQuery] = useState('')
+
   const syncDebounceRef = useRef<NodeJS.Timeout | null>(null)
 
-  // ==========================================
-  // FAST DATA LOADER (Coordinated Single Cycle)
-  // ==========================================
-  const loadShiftControlData = useCallback(async (isBackground = false) => {
-    if (!isBackground) {
-      setLoading(true)
-    } else {
-      setIsSyncing(true)
+  // Calculate counted cash
+  const countedCash = useMemo(() => {
+    if (useManualCount) {
+      return Math.max(0, Number(manualCountOverride) || 0)
     }
-    setActionError(null)
+    return DENOMINATIONS.reduce((sum, denom) => {
+      return sum + denom * (cashCounts[denom] || 0)
+    }, 0)
+  }, [useManualCount, manualCountOverride, cashCounts])
 
+  // System expected cash & variance
+  const systemExpected = activeShift?.systemExpectedCash ?? 0
+  const cashVariance = Math.round((countedCash - systemExpected) * 100) / 100
+
+  // Load Shift Data
+  const loadShiftData = useCallback(async (isBackground = false) => {
     try {
-      const [scheduleRes, ordersRes, driversRes, tripsRes, dailyShiftRes, staffRes] = await Promise.all([
-        fetch('/api/admin/schedule'),
-        fetch('/api/admin/orders?status=all'),
-        fetch('/api/admin/drivers'),
-        fetch('/api/admin/trips'),
+      if (!isBackground) setLoading(true)
+      setActionError(null)
+
+      const [shiftRes, scheduleRes, staffRes, driversRes] = await Promise.all([
         fetch('/api/admin/daily-shift'),
+        fetch('/api/schedule'),
         fetch('/api/admin/staff'),
+        fetch('/api/admin/drivers'),
       ])
 
-      if (ordersRes.status === 401 || driversRes.status === 401 || tripsRes.status === 401 || dailyShiftRes.status === 401) {
-        setIsAuthenticated(false)
-        setLoading(false)
-        setIsSyncing(false)
-        return
-      }
-
-      const [scheduleData, ordersData, driversData, tripsData, dailyShiftData, staffData] = await Promise.all([
+      const [shiftData, schedData, staffData, driversData] = await Promise.all([
+        shiftRes.json(),
         scheduleRes.json(),
-        ordersRes.json(),
-        driversRes.json(),
-        tripsRes.json(),
-        dailyShiftRes.json(),
         staffRes.json(),
+        driversRes.json(),
       ])
 
-      if (ordersRes.ok && driversRes.ok && tripsRes.ok) {
-        setIsAuthenticated(true)
-        setOperatingStatus(scheduleData.status || null)
-        setOrders(ordersData.orders || [])
-        setStaffList(staffData.staff || [])
+      if (shiftRes.ok) {
+        if (shiftData.hasActiveShift && shiftData.activeShift) {
+          setActiveShift(shiftData.activeShift)
+          setLastClosedShift(null)
 
-        if (staffData.currentStaff) {
-          setCurrentStaff(staffData.currentStaff)
-        } else if (dailyShiftData.currentStaff) {
-          setCurrentStaff(dailyShiftData.currentStaff)
-        }
+          // Fetch expenses & orders for this shift
+          const [expRes, ordersRes] = await Promise.all([
+            fetch(`/api/admin/expenses?shift_id=${shiftData.activeShift.id}`),
+            supabase
+              .from('orders')
+              .select('id, order_number, customer_name, customer_phone, delivery_address, order_type, status, payment_method, total_amount, created_at')
+              .eq('daily_shift_id', shiftData.activeShift.id)
+              .order('created_at', { ascending: false }),
+          ])
 
-        // Process Daily Shift & Expenses
-        if (dailyShiftData.hasActiveShift && dailyShiftData.activeShift) {
-          setDailyShift(dailyShiftData.activeShift)
-          const expRes = await fetch(`/api/admin/expenses?shift_id=${dailyShiftData.activeShift.id}`)
           if (expRes.ok) {
-            const expData = await expRes.json()
-            setExpenses(expData.expenses || [])
+            const expJson = await expRes.json()
+            setShiftExpenses(expJson.expenses || [])
+          }
+
+          if (ordersRes.data) {
+            setShiftOrders(ordersRes.data as ShiftOrder[])
           }
         } else {
-          setDailyShift(null)
-          setExpenses([])
+          setActiveShift(null)
+          setLastClosedShift(shiftData.lastClosedShift || null)
+          setShiftExpenses([])
+          setShiftOrders([])
         }
 
-        // Process Trips and Driver Workloads
-        interface RawTripItem {
-          id: string
-          trip_number: number
-          driver_id: string
-          status: string
-          expected_amount?: number
-          collected_amount?: number
-          created_at: string
-          drivers?: { name?: string }
-          order_driver_assignments?: { id: string; orders?: { status: string } }[]
+        if (shiftData.currentStaff) {
+          setCurrentStaff(shiftData.currentStaff)
         }
+      }
 
-        const rawTrips = (tripsData.trips || []) as RawTripItem[]
-        const formattedTrips: DeliveryTripOverview[] = rawTrips.map((t) => {
-          const assignments = t.order_driver_assignments || []
-          const delivered = assignments.filter((a) => a.orders?.status === 'delivered').length
-          const failed = assignments.filter((a) => a.orders?.status === 'failed').length
-          const inProgress = assignments.length - delivered - failed
+      if (scheduleRes.ok) {
+        setOperatingHours(schedData)
+      }
 
-          return {
-            id: t.id,
-            trip_number: t.trip_number,
-            driver_name: t.drivers?.name || 'غير معروف',
-            status: t.status,
-            expected_amount: t.expected_amount || 0,
-            collected_amount: t.collected_amount || 0,
-            order_count: assignments.length,
-            delivered_count: delivered,
-            failed_count: failed,
-            in_progress_count: inProgress,
-            created_at: t.created_at,
-          }
-        })
-        setTrips(formattedTrips)
+      if (staffRes.ok && Array.isArray(staffData.staff)) {
+        setStaffList(staffData.staff)
+      }
 
-        interface RawDriverItem {
-          id: string
-          name: string
-          is_active: boolean
-          status: 'offline' | 'available' | 'busy'
-          active_shift_id?: string
-        }
-
-        const rawDrivers = (driversData.drivers || []) as RawDriverItem[]
-        const activeTripMapByDriver = new Map<string, { trip_number: number; count: number }>()
-        for (const t of formattedTrips) {
-          if (t.status !== 'completed' && t.status !== 'cancelled') {
-            const driverId = rawTrips.find((rt) => rt.id === t.id)?.driver_id
-            if (driverId) {
-              activeTripMapByDriver.set(driverId, { trip_number: t.trip_number, count: t.order_count })
-            }
-          }
-        }
-
-        const formattedDrivers: DriverRoster[] = rawDrivers.map((d) => {
-          const activeTripInfo = activeTripMapByDriver.get(d.id)
-          return {
-            ...d,
-            current_trip_number: activeTripInfo?.trip_number || null,
-            current_trip_count: activeTripInfo?.count || 0,
-          }
-        })
-        setDrivers(formattedDrivers)
-      } else if (!isBackground) {
-        setActionError('تعذر تحميل بيانات مركز التحكم بالوردية')
+      if (driversRes.ok && Array.isArray(driversData.drivers)) {
+        setDriverList(driversData.drivers)
       }
     } catch {
       if (!isBackground) {
-        setActionError('تعذر الاتصال بالسيرفر')
+        setActionError('تعذر الاتصال بالسيرفر لتحديث بيانات الوردية')
       }
     } finally {
       setLoading(false)
-      setIsSyncing(false)
     }
   }, [])
 
-  // Debounced realtime trigger
   const scheduleBackgroundSync = useCallback(() => {
     if (syncDebounceRef.current) {
       clearTimeout(syncDebounceRef.current)
     }
     syncDebounceRef.current = setTimeout(() => {
-      loadShiftControlData(true)
+      loadShiftData(true)
     }, 300)
-  }, [loadShiftControlData])
+  }, [loadShiftData])
 
   useEffect(() => {
-    loadShiftControlData(false)
-
-    const handleOnline = () => {
-      setIsOnline(true)
-      loadShiftControlData(true)
-    }
-    const handleOffline = () => setIsOnline(false)
-
-    window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
-    if (typeof window !== 'undefined') {
-      setIsOnline(navigator.onLine)
-    }
+    loadShiftData(false)
 
     const channel = supabase
-      .channel('shift-control-optimized-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => scheduleBackgroundSync())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => scheduleBackgroundSync())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => scheduleBackgroundSync())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_trips' }, () => scheduleBackgroundSync())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => scheduleBackgroundSync())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_expenses' }, () => scheduleBackgroundSync())
+      .channel('shift-control-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
+        scheduleBackgroundSync()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        scheduleBackgroundSync()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_expenses' }, () => {
+        scheduleBackgroundSync()
+      })
       .subscribe()
 
     return () => {
-      window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
       supabase.removeChannel(channel)
-      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current)
     }
-  }, [loadShiftControlData, scheduleBackgroundSync])
+  }, [loadShiftData, scheduleBackgroundSync])
 
-  // ==========================================
-  // AUTHENTICATION
-  // ==========================================
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoginError('')
-    setIsLoggingIn(true)
-
-    try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passcode }),
-      })
-
-      const data = await res.json()
-      if (res.ok) {
-        setIsAuthenticated(true)
-        setPasscode('')
-        loadShiftControlData(false)
-      } else {
-        setLoginError(data.error || 'رمز الدخول غير صحيح')
-      }
-    } catch {
-      setLoginError('تعذر الاتصال بالسيرفر')
-    } finally {
-      setIsLoggingIn(false)
-    }
-  }
-
-  // ==========================================
-  // SHIFT MANAGEMENT HANDLERS (Open / Close)
-  // ==========================================
+  // Open Shift Action
   const handleOpenShift = async (e: React.FormEvent) => {
     e.preventDefault()
-    const staff = openShiftStaff === 'other' ? customStaffName.trim() : openShiftStaff.trim()
-    if (!staff) {
-      setActionError('يرجى تحديد اسم المسؤول عن فتح الوردية')
-      return
-    }
-
-    setIsSubmittingShift(true)
+    setIsSubmitting(true)
     setActionError(null)
 
     try {
@@ -406,40 +271,96 @@ export default function ShiftControlAndCashPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'open',
-          opened_by: staff,
-          initial_cash: parseFloat(initialCashInput) || 0,
+          initial_cash: Number(initialCashInput) || 0,
           notes: openShiftNotes.trim() || undefined,
         }),
       })
 
       const data = await res.json()
       if (res.ok) {
-        setShowOpenShiftModal(false)
-        setActionSuccess('تم فتح الوردية اليومية بنجاح وإرسال إشعار تلجرام ✓')
-        loadShiftControlData(true)
+        setActionSuccess('تم فتح الوردية بنجاح')
+        setInitialCashInput('0')
+        setOpenShiftNotes('')
+        loadShiftData(false)
       } else {
-        setActionError(data.error || 'تعذر فتح الوردية')
+        setActionError(data.error || 'فشل فتح الوردية')
       }
     } catch {
-      setActionError('تعذر الاتصال بالسيرفر لفتح الوردية')
+      setActionError('تعذر الاتصال بالسيرفر')
     } finally {
-      setIsSubmittingShift(false)
+      setIsSubmitting(false)
     }
   }
 
-  const handleCloseShift = async (e: React.FormEvent) => {
+  // Record Expense / Advance Action
+  const handleRecordExpense = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (actualCashInput === '' || isNaN(parseFloat(actualCashInput))) {
-      setActionError('يرجى إدخال المبلغ الفعلي الموجود بالدرج')
+    const amountNum = Number(expenseAmount)
+    if (isNaN(amountNum) || amountNum <= 0) {
+      setActionError('يرجى إدخال مبلغ صحيح أكبر من صفر')
       return
     }
 
-    if (!dailyShift) {
-      setActionError('لا توجد وردية نشطة لإغلاقها')
-      return
-    }
+    setIsSubmitting(true)
+    setActionError(null)
 
-    setIsSubmittingShift(true)
+    try {
+      let recipient = expenseRecipient.trim()
+      let driverId: string | undefined = undefined
+      let staffId: string | undefined = undefined
+
+      if (expenseCategory === 'سلف طيارين') {
+        const found = driverList.find((d) => d.id === expenseSelectedDriverId)
+        if (found) {
+          recipient = found.name
+          driverId = found.id
+        }
+      } else if (expenseCategory === 'سلف موظفين') {
+        const found = staffList.find((s) => s.id === expenseSelectedStaffId)
+        if (found) {
+          recipient = found.full_name
+          staffId = found.id
+        }
+      }
+
+      const res = await fetch('/api/admin/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          category: expenseCategory,
+          amount: amountNum,
+          description: expenseDescription.trim() || 'بدون تفاصيل',
+          recipient_name: recipient || undefined,
+          driver_id: driverId,
+          staff_id: staffId,
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok) {
+        setActionSuccess('تم تسجيل المصروف/السلفة بنجاح')
+        setShowExpenseModal(false)
+        setExpenseAmount('')
+        setExpenseDescription('')
+        setExpenseRecipient('')
+        setExpenseSelectedDriverId('')
+        setExpenseSelectedStaffId('')
+        loadShiftData(true)
+      } else {
+        setActionError(data.error || 'فشل تسجيل المصروف')
+      }
+    } catch {
+      setActionError('تعذر الاتصال بالسيرفر')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  // Close Shift Action
+  const handleCloseShift = async () => {
+    if (!activeShift) return
+
+    setIsSubmitting(true)
     setActionError(null)
 
     try {
@@ -448,1158 +369,716 @@ export default function ShiftControlAndCashPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'close',
-          shift_id: dailyShift.id,
-          final_cash: parseFloat(actualCashInput),
+          shift_id: activeShift.id,
+          final_cash: countedCash,
           notes: closeShiftNotes.trim() || undefined,
         }),
       })
 
       const data = await res.json()
-      if (res.ok && data.success) {
+      if (res.ok) {
+        setActionSuccess('تم إغلاق الوردية وترحيل الحسابات بنجاح')
         setShowCloseShiftModal(false)
-        const rec = data.reconciliation
-        const statusBadge =
-          rec?.reconciliation_status === 'balanced'
-            ? '✓ الدرج مطابق تماماً'
-            : rec?.reconciliation_status === 'surplus'
-            ? `📈 زيادة بالدرج (+${rec.discrepancy} ج.م)`
-            : `📉 عجز بالدرج (${rec?.discrepancy} ج.م)`
-        setActionSuccess(`تم إغلاق الوردية والتقفيل المالي بنجاح [${statusBadge}] وإرسال تقرير Z-Report إلى تليجرام ✓`)
-        loadShiftControlData(true)
+        setCloseShiftNotes('')
+        loadShiftData(false)
       } else {
-        setActionError(data.error || 'تعذر إغلاق الوردية')
+        setActionError(data.error || 'فشل إغلاق الوردية')
       }
     } catch {
       setActionError('تعذر الاتصال بالسيرفر لإغلاق الوردية')
     } finally {
-      setIsSubmittingShift(false)
+      setIsSubmitting(false)
     }
   }
 
-  // ==========================================
-  // EXPENSE / ADVANCE RECORDING
-  // ==========================================
-  const handleAddExpense = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const amt = parseFloat(expenseAmount)
-    if (isNaN(amt) || amt <= 0) {
-      setActionError('يرجى إدخال مبلغ صحيح أكبر من صفر')
-      return
-    }
-
-    let payload: {
-      category: string
-      amount: number
-      description: string
-      recipient_name?: string
-      recorded_by?: string
-      driver_id?: string
-      staff_id?: string
-    }
-
-    if (expenseType === 'advance') {
-      if (!selectedPersonKey) {
-        setActionError('يرجى اختيار الشخص المستلم للسلفة أو تحديد "أخرى"')
-        return
-      }
-
-      if (selectedPersonKey === 'other') {
-        if (!advanceCustomName.trim()) {
-          setActionError('يرجى كتابة اسم المستلم للسلفة')
-          return
-        }
-        if (!advanceReason.trim()) {
-          setActionError('يرجى كتابة سبب وبيان السلفة')
-          return
-        }
-        payload = {
-          category: 'سلف موظفين',
-          amount: amt,
-          description: advanceReason.trim(),
-          recipient_name: advanceCustomName.trim(),
-          recorded_by: expenseRecordedBy.trim() || undefined,
-        }
-      } else if (selectedPersonKey.startsWith('driver_')) {
-        const driverId = selectedPersonKey.replace('driver_', '')
-        const driver = drivers.find((d) => d.id === driverId)
-        payload = {
-          category: 'سلف طيارين',
-          amount: amt,
-          description: advanceReason.trim() || `سلفة طيار: ${driver?.name || 'طيار'}`,
-          recipient_name: driver?.name || undefined,
-          driver_id: driverId,
-          recorded_by: expenseRecordedBy.trim() || undefined,
-        }
-      } else if (selectedPersonKey.startsWith('staff_')) {
-        const staffId = selectedPersonKey.replace('staff_', '')
-        const staff = staffList.find((s) => s.id === staffId)
-        const roleLabel = STAFF_ROLE_LABELS[staff?.role || ''] || staff?.role || 'موظف'
-        payload = {
-          category: 'سلف موظفين',
-          amount: amt,
-          description: advanceReason.trim() || `سلفة موظف: ${staff?.full_name || ''} (${roleLabel})`,
-          recipient_name: staff?.full_name || undefined,
-          staff_id: staffId,
-          recorded_by: expenseRecordedBy.trim() || undefined,
-        }
-      } else {
-        setActionError('اختيار المستلم غير صحيح')
-        return
-      }
-    } else {
-      if (!expenseDesc.trim()) {
-        setActionError('يرجى كتابة تفاصيل وبيان المصروف')
-        return
-      }
-      payload = {
-        category: expenseCategory,
-        amount: amt,
-        description: expenseDesc.trim(),
-        recipient_name: expenseRecipient.trim() || undefined,
-        recorded_by: expenseRecordedBy.trim() || undefined,
-      }
-    }
-
-    setIsSubmittingExpense(true)
-    setActionError(null)
-
-    try {
-      const res = await fetch('/api/admin/expenses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-
-      const data = await res.json()
-      if (res.ok) {
-        setShowExpenseModal(false)
-        setExpenseAmount('')
-        setExpenseDesc('')
-        setExpenseRecipient('')
-        setSelectedPersonKey('')
-        setAdvanceCustomName('')
-        setAdvanceReason('')
-        setActionSuccess('تم تسجيل العملية بنجاح وخصمها من تقرير الوردية ✓')
-        loadShiftControlData(true)
-      } else {
-        setActionError(data.error || 'تعذر تسجيل المصروف / السلفة')
-      }
-    } catch {
-      setActionError('تعذر الاتصال بالسيرفر لتسجيل المصروف')
-    } finally {
-      setIsSubmittingExpense(false)
-    }
-  }
-
-  // ==========================================
-  // OPERATIONAL CLOSURE READINESS CHECKLIST (Guard Check)
-  // ==========================================
-  const activeUnresolvedOrders = useMemo(
-    () => orders.filter((o) => ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)),
-    [orders]
-  )
-
-  const activeUnclosedTrips = useMemo(
-    () => trips.filter((t) => t.status !== 'completed' && t.status !== 'cancelled'),
-    [trips]
-  )
-
-  const activeDriverShifts = useMemo(
-    () => drivers.filter((d) => d.active_shift_id || d.status === 'available' || d.status === 'busy'),
-    [drivers]
-  )
-
-  const pendingCustodyCash = dailyShift ? Number(dailyShift.driverCustodyCash || 0) : 0
-  const isShiftOpen = !!dailyShift
-
-  const closureIssues: string[] = []
-  if (!isShiftOpen) {
-    closureIssues.push('لا توجد وردية مفتوحة حالياً.')
-  } else {
-    if (activeUnresolvedOrders.length > 0) {
-      closureIssues.push(`يوجد ${activeUnresolvedOrders.length} طلب نشط لم يحسم بعد بالمطبخ أو التوصيل.`)
-    }
-    if (activeUnclosedTrips.length > 0) {
-      closureIssues.push(`يوجد ${activeUnclosedTrips.length} رحلة دليفري نشطة في الميدان لم تغلق.`)
-    }
-    if (activeDriverShifts.length > 0) {
-      closureIssues.push(`يوجد ${activeDriverShifts.length} طيار في حالة دوام نشط — يجب إنهاء وردياتهم.`)
-    }
-    if (pendingCustodyCash > 0) {
-      closureIssues.push(`توجد عهدة كاش معلقة مع الطيارين بقيمة ${pendingCustodyCash.toLocaleString()} ج.م.`)
-    }
-  }
-
-  const isReadyToClose = isShiftOpen && closureIssues.length === 0
-
-  // Filtered Orders View
-  const filteredOrders = useMemo(() => {
-    if (orderFilter === 'kitchen') return orders.filter((o) => o.status === 'processing')
-    if (orderFilter === 'ready') return orders.filter((o) => o.status === 'ready')
-    if (orderFilter === 'delivery') return orders.filter((o) => o.order_type === 'delivery')
-    if (orderFilter === 'takeaway') return orders.filter((o) => o.order_type === 'takeaway' || o.order_type === 'dine_in')
-    return orders
-  }, [orders, orderFilter])
-
-  // Discrepancy calculation for close shift modal
-  const parsedActualCash = parseFloat(actualCashInput) || 0
-  const expectedCashForModal = dailyShift ? Number(dailyShift.systemExpectedCash || 0) : 0
-  const discrepancy = parsedActualCash - expectedCashForModal
-
-  // ==========================================
-  // UNAUTHENTICATED STATE
-  // ==========================================
-  if (isAuthenticated === false) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-zinc-900 to-zinc-950 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm bg-white rounded-3xl p-8 shadow-2xl border border-zinc-200">
-          <div className="text-center mb-6">
-            <span className="text-5xl block mb-2">🏬</span>
-            <h1 className="text-xl font-black text-gray-900">دخول مركز التحكم في الوردية</h1>
-            <p className="text-xs text-gray-500 mt-1">لوحة الإدارة والتحكم المالي والتقفيل اليومي (Z-Report)</p>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">كود الإدارة / المدير</label>
-              <input
-                type="password"
-                value={passcode}
-                onChange={(e) => setPasscode(e.target.value)}
-                placeholder="أدخل رمز المرور..."
-                required
-                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-center font-bold tracking-widest text-lg bg-gray-50 text-gray-900"
-              />
-            </div>
-
-            {loginError && (
-              <p className="text-red-600 text-xs font-semibold text-center bg-red-50 p-2 rounded-xl border border-red-100">
-                ⚠️ {loginError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={isLoggingIn || !passcode}
-              className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-md disabled:opacity-50"
-            >
-              {isLoggingIn ? 'جاري التحقق...' : 'دخول مركز التحكم ✓'}
-            </button>
-          </form>
-        </div>
-      </div>
+  // Readiness checklist calculations
+  const unresolvedOrders = useMemo(() => {
+    return shiftOrders.filter((o) =>
+      ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
     )
-  }
+  }, [shiftOrders])
+
+  const canClose = useMemo(() => {
+    if (!currentStaff) return false
+    return ['owner', 'manager', 'cashier'].includes(currentStaff.role)
+  }, [currentStaff])
+
+  const isStoreClosed = operatingHours ? !operatingHours.isOpen : true
+
+  const filteredOrders = useMemo(() => {
+    if (!orderSearchQuery.trim()) return shiftOrders
+    const q = orderSearchQuery.trim().toLowerCase()
+    return shiftOrders.filter(
+      (o) =>
+        String(o.order_number).includes(q) ||
+        o.customer_name.toLowerCase().includes(q) ||
+        o.customer_phone.includes(q)
+    )
+  }, [shiftOrders, orderSearchQuery])
+
+  // Tab definitions
+  const tabs: TabItem[] = [
+    { id: 'reconciliation', label: 'مطابقة وجرد الدرج', icon: '💵' },
+    { id: 'expenses', label: 'المصروفات والسلف', count: shiftExpenses.length, icon: '💸' },
+    { id: 'orders', label: 'طلبات الوردية', count: shiftOrders.length, icon: '📦' },
+    { id: 'readiness', label: 'جاهزية الإغلاق', icon: '🔒' },
+  ]
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900 flex flex-col font-sans pb-20 md:pb-6">
-      {/* Global Shell Header & Shift Bar */}
-      <OpsNavbar
-        title="مركز التحكم في الوردية والخزينة"
-        subtitle="المطابقة المالية للدرج، تسجيل المصروفات، وإغلاق الوردية المعتمد (Z-Report)"
-      />
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans select-none pb-20 md:pb-8">
+      {/* Global Header & Shift Status Bar */}
+      <OpsNavbar title="الخزينة والوردية" />
       <GlobalShiftBar />
 
-      {/* Connectivity Alert */}
-      {!isOnline && (
-        <div className="bg-red-600 text-white text-xs font-bold py-2 px-4 text-center shadow-inner flex items-center justify-center gap-2">
-          <span>⚠️ لقد انقطع الاتصال بالإنترنت. البيانات المعروضة قد لا تكون لحظية...</span>
-        </div>
-      )}
-
-      <main className="max-w-7xl mx-auto px-4 py-5 flex-1 w-full space-y-5">
-        {/* Action Alerts */}
+      <main className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6 flex-1 w-full space-y-4">
+        {/* Action Banners */}
         {actionError && (
-          <div className="bg-red-50 border border-red-200 text-red-800 p-3.5 rounded-2xl flex items-center justify-between text-xs font-bold shadow-xs">
+          <div className="bg-red-950/80 border border-red-700 text-red-200 p-3 rounded-2xl flex items-center justify-between text-xs font-bold shadow-xs">
             <span>⚠️ {actionError}</span>
-            <button onClick={() => setActionError(null)} className="text-red-500 font-extrabold px-1">
-              ✕
-            </button>
+            <button onClick={() => setActionError(null)} className="text-red-400 p-1 cursor-pointer">✕</button>
           </div>
         )}
 
         {actionSuccess && (
-          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-3.5 rounded-2xl flex items-center justify-between text-xs font-bold shadow-xs">
+          <div className="bg-emerald-950/80 border border-emerald-700 text-emerald-200 p-3 rounded-2xl flex items-center justify-between text-xs font-bold shadow-xs">
             <span>✅ {actionSuccess}</span>
-            <button onClick={() => setActionSuccess(null)} className="text-emerald-500 font-extrabold px-1">
-              ✕
-            </button>
+            <button onClick={() => setActionSuccess(null)} className="text-emerald-400 p-1 cursor-pointer">✕</button>
           </div>
         )}
 
-        {/* ========================================== */}
-        {/* 1. SHIFT GATEKEEPER & FINANCIAL CONTROL BANNER */}
-        {/* ========================================== */}
-        {!dailyShift ? (
-          <div className="bg-gradient-to-r from-red-950 via-zinc-900 to-red-950 text-white rounded-3xl p-6 shadow-md border border-red-800/60 flex flex-col md:flex-row items-center justify-between gap-6">
-            <div className="space-y-2 text-center md:text-right">
-              <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-500/20 text-red-300 border border-red-500/40 text-xs font-bold">
-                <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
-                الوردية اليومية مغلقة حالياً
-              </div>
-              <h2 className="text-lg sm:text-xl font-black text-white">
-                ⚠️ لا توجد وردية يومية مفتوحة لتسجيل الحسابات والطلبات
-              </h2>
-              <p className="text-xs text-zinc-300 max-w-xl leading-relaxed">
-                لبدء يوم عمل جديد بدقة وحساب مالي منضبط، يجب فتح وردية وتحديد المسؤول (الكاشير) وإدخال عهدة الدرج الافتتاحية.
-              </p>
-            </div>
-
-            <button
-              onClick={() => {
-                setOpenShiftStaff(currentStaff?.full_name || staffList[0]?.full_name || '')
-                setCustomStaffName('')
-                setInitialCashInput('500')
-                setOpenShiftNotes('')
-                setShowOpenShiftModal(true)
-              }}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-black px-6 py-3.5 rounded-2xl shadow-lg transition-all flex items-center gap-2 whitespace-nowrap active:scale-95"
-            >
-              <span className="text-lg">🔓</span>
-              <span>فتح وردية يومية جديدة</span>
-            </button>
+        {loading && !activeShift && !lastClosedShift ? (
+          <div className="py-24 text-center text-xs text-zinc-500 animate-pulse">
+            جاري تحميل بيانات الوردية والخزينة...
           </div>
-        ) : (
-          <div className="bg-gradient-to-l from-zinc-950 via-zinc-900 to-zinc-950 text-white rounded-3xl p-5 sm:p-6 shadow-md border border-zinc-800 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 pb-4">
-              <div className="space-y-1">
-                <div className="flex items-center gap-3">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-xs font-black">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    الوردية #{dailyShift.shift_number} مفتوحة
-                  </span>
-                  <span className="text-xs font-bold text-amber-200/80">
-                    {new Date(dailyShift.opened_at).toLocaleDateString('ar-EG', {
-                      weekday: 'long',
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                      timeZone: 'Africa/Cairo',
-                    })}
-                  </span>
-                </div>
-                <h2 className="text-sm sm:text-base font-black text-white">
-                  المسؤول الحالي: <span className="text-amber-400">{dailyShift.opened_by}</span>
-                  <span className="text-xs font-normal text-zinc-400 mr-2">
-                    (فتحت الساعة{' '}
-                    {new Date(dailyShift.opened_at).toLocaleTimeString('ar-EG', {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      timeZone: 'Africa/Cairo',
-                    })}
-                    )
-                  </span>
-                </h2>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  onClick={() => {
-                    setExpenseCategory('سلف طيارين')
-                    setExpenseAmount('')
-                    setExpenseDesc('')
-                    setExpenseRecipient('')
-                    setExpenseRecordedBy(dailyShift.opened_by)
-                    setShowExpenseModal(true)
-                  }}
-                  className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-black px-4 py-2.5 rounded-xl shadow-xs transition-all flex items-center gap-1.5"
-                >
-                  <span>💸</span>
-                  <span>تسجيل مصروف / سلفة</span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    setActualCashInput('')
-                    setCloseShiftNotes('')
-                    setShowCloseShiftModal(true)
-                  }}
-                  className="bg-red-700 hover:bg-red-800 text-white text-xs font-black px-4 py-2.5 rounded-xl shadow-xs transition-all flex items-center gap-1.5"
-                >
-                  <span>🔒</span>
-                  <span>تقفيل الوردية والدرج (Z-Report)</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Financial Summary Grid (Canonical SSoT) */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-center">
-              <div className="bg-white/5 p-3 rounded-2xl border border-white/10">
-                <span className="text-[10px] text-zinc-400 font-bold block">العهدة الافتتاحية</span>
-                <span className="text-lg sm:text-xl font-black tabular-nums text-white">
-                  {Number(dailyShift.initial_cash || 0).toFixed(0)} ج.م
-                </span>
-              </div>
-              <div className="bg-emerald-950/40 p-3 rounded-2xl border border-emerald-800/40">
-                <span className="text-[10px] text-emerald-300 font-bold block">مبيعات الصالة والاستلام</span>
-                <span className="text-lg sm:text-xl font-black tabular-nums text-emerald-300">
-                  {Number(dailyShift.takeawaySales || 0).toFixed(0)} ج.م
-                </span>
-              </div>
-              <div className="bg-purple-950/40 p-3 rounded-2xl border border-purple-800/40">
-                <span className="text-[10px] text-purple-300 font-bold block">مبيعات الدليفري</span>
-                <span className="text-lg sm:text-xl font-black tabular-nums text-purple-300">
-                  {Number(dailyShift.deliverySales || 0).toFixed(0)} ج.م
-                </span>
-              </div>
-              <div className="bg-blue-950/40 p-3 rounded-2xl border border-blue-800/40">
-                <span className="text-[10px] text-blue-300 font-bold block">إجمالي المبيعات</span>
-                <span className="text-lg sm:text-xl font-black tabular-nums text-blue-200">
-                  {Number(dailyShift.totalSales || 0).toFixed(0)} ج.م
-                </span>
-              </div>
-              <div className="bg-red-950/40 p-3 rounded-2xl border border-red-800/40">
-                <span className="text-[10px] text-red-300 font-bold block">المصروفات والسلف ({expenses.length})</span>
-                <span className="text-lg sm:text-xl font-black tabular-nums text-red-300">
-                  -{Number(dailyShift.totalExpenses || 0).toFixed(0)} ج.م
-                </span>
-              </div>
-              <div className="bg-amber-500/20 p-3 rounded-2xl border border-amber-500/50">
-                <span className="text-[10px] text-amber-300 font-black block">نقدية الدرج المتوقعة</span>
-                <span className="text-xl sm:text-2xl font-black tabular-nums text-amber-300">
-                  {Number(dailyShift.systemExpectedCash || 0).toFixed(0)} ج.م
-                </span>
-              </div>
-            </div>
-
-            {/* Driver Custody Alert */}
-            {pendingCustodyCash > 0 && (
-              <div className="bg-amber-950/90 rounded-2xl border border-amber-600/70 p-3 text-xs flex flex-wrap items-center justify-between gap-3 text-amber-200">
-                <div className="flex items-center gap-2">
-                  <span className="text-lg">🛵</span>
-                  <div>
-                    <span className="font-extrabold text-amber-300 block text-xs">تنبيه عهدة كاش معلقة مع الطيارين</span>
-                    <span className="text-[11px] text-zinc-300">
-                      توجد مبالغ محصلة في الميدان لم تُورّد للخزينة بعد. يجب تسوية الرحلات قبل تقفيل الوردية.
-                    </span>
-                  </div>
-                </div>
-                <div className="bg-amber-600 text-white px-3 py-1 rounded-xl font-black text-xs">
-                  {pendingCustodyCash.toLocaleString()} ج.م مع الطيارين
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ========================================== */}
-        {/* 2. SHIFT OPERATIONS HUB (Tabbed 0ms View) */}
-        {/* ========================================== */}
-        <div className="bg-white rounded-3xl border border-gray-200 shadow-xs overflow-hidden">
-          {/* Tabs Navigation Header */}
-          <div className="bg-gray-50 border-b border-gray-200 px-4 py-2 flex items-center gap-2 overflow-x-auto scrollbar-thin">
-            <button
-              onClick={() => setActiveTab('reconciliation')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                activeTab === 'reconciliation'
-                  ? 'bg-zinc-900 text-white shadow-xs font-black'
-                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-              }`}
-            >
-              <span>💰</span>
-              <span>مطابقة الخزينة والدرج</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('expenses')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                activeTab === 'expenses'
-                  ? 'bg-zinc-900 text-white shadow-xs font-black'
-                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-              }`}
-            >
-              <span>💸</span>
-              <span>المصروفات والسلف ({expenses.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('readiness')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                activeTab === 'readiness'
-                  ? 'bg-zinc-900 text-white shadow-xs font-black'
-                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-              }`}
-            >
-              <span>🛡️</span>
-              <span>تدقيق جاهزية التقفيل ({closureIssues.length === 0 ? 'جاهز ✓' : `${closureIssues.length} مانع`})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('orders')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                activeTab === 'orders'
-                  ? 'bg-zinc-900 text-white shadow-xs font-black'
-                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-              }`}
-            >
-              <span>📋</span>
-              <span>طلبات الوردية ({orders.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('fleet')}
-              className={`px-3.5 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 ${
-                activeTab === 'fleet'
-                  ? 'bg-zinc-900 text-white shadow-xs font-black'
-                  : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
-              }`}
-            >
-              <span>🛵</span>
-              <span>الأسطول والرحلات ({drivers.length})</span>
-            </button>
-          </div>
-
-          {/* TAB 1: RECONCILIATION */}
-          {activeTab === 'reconciliation' && (
-            <div className="p-5 space-y-5">
-              <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                <div>
-                  <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                    <span>💵 معادلة النقدية ومطابقة الدرج (Cash Equation)</span>
-                  </h3>
-                  <p className="text-[11px] text-gray-500 mt-0.5">
-                    النقدية المحسوبة بواسطة محرك المحاسبة المعتمد (SSoT)
-                  </p>
-                </div>
-
-                {isSyncing && (
-                  <span className="text-[10px] text-amber-700 font-bold bg-amber-50 px-2 py-1 rounded-lg border border-amber-200">
-                    مزامنة حية...
-                  </span>
-                )}
-              </div>
-
-              {dailyShift ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {/* Left: Cash In / Out Breakdown */}
-                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200 space-y-3 text-xs">
-                    <h4 className="font-black text-gray-900 border-b border-gray-200 pb-2">
-                      تفاصيل الحركات النقدية للوردية:
-                    </h4>
-
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">العهدة الافتتاحية (+):</span>
-                        <span className="font-black tabular-nums text-gray-900">
-                          {Number(dailyShift.initial_cash || 0).toLocaleString()} ج.م
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-center">
-                        <span className="text-emerald-700 font-bold">مبيعات نقدية محصلة بالفرع (+):</span>
-                        <span className="font-black tabular-nums text-emerald-700">
-                          +{Number(dailyShift.cashSales || 0).toLocaleString()} ج.م
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-center">
-                        <span className="text-red-700 font-bold">إجمالي المصروفات والسلف (-):</span>
-                        <span className="font-black tabular-nums text-red-700">
-                          -{Number(dailyShift.totalExpenses || 0).toLocaleString()} ج.م
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-center pt-2 border-t border-gray-200">
-                        <span className="font-black text-gray-900">نقدية الدرج المتوقعة (=):</span>
-                        <span className="font-black text-sm text-amber-700 tabular-nums">
-                          {Number(dailyShift.systemExpectedCash || 0).toLocaleString()} ج.م
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Right: Electronic & Fleet Snapshot */}
-                  <div className="bg-gray-50 p-4 rounded-2xl border border-gray-200 space-y-3 text-xs">
-                    <h4 className="font-black text-gray-900 border-b border-gray-200 pb-2">
-                      المبيعات الإلكترونية وحسابات الأسطول:
-                    </h4>
-
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">مبيعات إلكترونية (إنستا باي/محافظ):</span>
-                        <span className="font-black tabular-nums text-blue-700">
-                          {Number(dailyShift.nonCashSales || 0).toLocaleString()} ج.م
-                        </span>
-                      </div>
-
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-600">كاش عهدة طيارين معلقة:</span>
-                        <span className="font-black tabular-nums text-amber-700">
-                          {Number(dailyShift.driverCustodyCash || 0).toLocaleString()} ج.م
-                        </span>
-                      </div>
-
-                      {dailyShift.fleetAccounting && (
-                        <div className="flex justify-between items-center pt-2 border-t border-gray-200">
-                          <span className="font-bold text-gray-700">صافي مستحقات الأسطول:</span>
-                          <span className="font-black text-emerald-700 tabular-nums">
-                            {Number(dailyShift.fleetAccounting.totalNetPayout || 0).toLocaleString()} ج.م
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="text-center py-12 text-gray-400 text-xs font-bold">
-                  لا توجد وردية مفتوحة لعرض معادلة النقدية
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB 2: EXPENSES */}
-          {activeTab === 'expenses' && (
-            <div className="p-5 space-y-4">
-              <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                <h3 className="text-sm font-black text-gray-900">
-                  سجل المصروفات والسلف للوردية الحالية ({expenses.length})
-                </h3>
-                {dailyShift && (
-                  <button
-                    onClick={() => {
-                      setExpenseCategory('سلف طيارين')
-                      setExpenseAmount('')
-                      setExpenseDesc('')
-                      setExpenseRecipient('')
-                      setExpenseRecordedBy(dailyShift.opened_by)
-                      setShowExpenseModal(true)
-                    }}
-                    className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-black px-3.5 py-1.5 rounded-xl shadow-xs transition-all"
-                  >
-                    + تسجيل جديد
-                  </button>
-                )}
-              </div>
-
-              {expenses.length === 0 ? (
-                <div className="text-center py-12 text-gray-400 text-xs font-bold">
-                  لا توجد مصروفات أو سلف مسجلة خلال هذه الوردية
-                </div>
-              ) : (
-                <div className="divide-y divide-gray-100">
-                  {expenses.map((exp) => (
-                    <div key={exp.id} className="py-3 flex justify-between items-center text-xs">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-black text-gray-900">{exp.description}</span>
-                          <span className="text-[10px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 font-bold">
-                            {exp.category}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-gray-500 mt-0.5">
-                          {exp.recipient_name && <span>المستلم: {exp.recipient_name} • </span>}
-                          <span>المسؤول: {exp.recorded_by || 'الإدارة'}</span>
-                        </p>
-                      </div>
-
-                      <div className="text-left">
-                        <span className="font-black text-red-600 text-sm block tabular-nums">
-                          -{Number(exp.amount).toFixed(0)} ج.م
-                        </span>
-                        <span className="text-[10px] text-gray-400">
-                          {new Date(exp.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB 3: CLOSURE READINESS CHECKLIST */}
-          {activeTab === 'readiness' && (
-            <div className="p-5 space-y-4">
-              <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                  <span>🛡️ فحص معايير أمان إغلاق الوردية (Shift Close Guards)</span>
-                  <span
-                    className={`text-[11px] font-black px-2.5 py-0.5 rounded-full ${
-                      isReadyToClose
-                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                        : 'bg-rose-100 text-rose-800 border border-rose-300'
-                    }`}
-                  >
-                    {isReadyToClose ? 'جاهز للإغلاق المالي ✓' : 'توجد موانع تشغيلية ⚠️'}
-                  </span>
-                </h3>
-              </div>
-
-              <div className="space-y-3 text-xs">
-                {/* Check 1 */}
-                <div className={`p-3 rounded-2xl border flex items-center justify-between ${
-                  activeUnresolvedOrders.length === 0 ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950' : 'bg-rose-50 border-rose-200 text-rose-950'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <span>{activeUnresolvedOrders.length === 0 ? '✅' : '❌'}</span>
-                    <span className="font-bold">حسم كافة طلبات الوردية (0 طلب معلق)</span>
-                  </div>
-                  <span className="font-bold">{activeUnresolvedOrders.length} طلب نشط</span>
-                </div>
-
-                {/* Check 2 */}
-                <div className={`p-3 rounded-2xl border flex items-center justify-between ${
-                  activeUnclosedTrips.length === 0 ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950' : 'bg-rose-50 border-rose-200 text-rose-950'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <span>{activeUnclosedTrips.length === 0 ? '✅' : '❌'}</span>
-                    <span className="font-bold">إغلاق وتسوية رحلات الدليفري (0 رحلة نشطة)</span>
-                  </div>
-                  <span className="font-bold">{activeUnclosedTrips.length} رحلة مفتوحة</span>
-                </div>
-
-                {/* Check 3 */}
-                <div className={`p-3 rounded-2xl border flex items-center justify-between ${
-                  activeDriverShifts.length === 0 ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950' : 'bg-rose-50 border-rose-200 text-rose-950'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <span>{activeDriverShifts.length === 0 ? '✅' : '❌'}</span>
-                    <span className="font-bold">إنهاء ورديات الطيارين النشطة</span>
-                  </div>
-                  <span className="font-bold">{activeDriverShifts.length} طيار في الخدمة</span>
-                </div>
-
-                {/* Check 4 */}
-                <div className={`p-3 rounded-2xl border flex items-center justify-between ${
-                  pendingCustodyCash === 0 ? 'bg-emerald-50/70 border-emerald-200 text-emerald-950' : 'bg-rose-50 border-rose-200 text-rose-950'
-                }`}>
-                  <div className="flex items-center gap-2">
-                    <span>{pendingCustodyCash === 0 ? '✅' : '❌'}</span>
-                    <span className="font-bold">توريد عهدة كاش الطيارين للخزينة (0 ج.م)</span>
-                  </div>
-                  <span className="font-bold">{pendingCustodyCash.toLocaleString()} ج.م معلقة</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* TAB 4: ORDERS */}
-          {activeTab === 'orders' && (
-            <div className="p-5 space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-3">
-                <h3 className="text-sm font-black text-gray-900">طلبات الوردية ({filteredOrders.length})</h3>
-
-                <div className="flex gap-1 bg-gray-100 p-1 rounded-xl text-xs font-bold">
-                  {(['all', 'kitchen', 'ready', 'delivery', 'takeaway'] as const).map((filterKey) => (
-                    <button
-                      key={filterKey}
-                      onClick={() => setOrderFilter(filterKey)}
-                      className={`px-2.5 py-1 rounded-lg transition-all ${
-                        orderFilter === filterKey ? 'bg-zinc-900 text-white shadow-xs font-black' : 'text-gray-600 hover:text-gray-900'
-                      }`}
-                    >
-                      {filterKey === 'all'
-                        ? 'الكل'
-                        : filterKey === 'kitchen'
-                        ? '🔥 المطبخ'
-                        : filterKey === 'ready'
-                        ? '📦 الجاهز'
-                        : filterKey === 'delivery'
-                        ? '🛵 دليفري'
-                        : '🏪 صالة'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {filteredOrders.length === 0 ? (
-                <div className="text-center py-12 text-gray-400 text-xs font-bold">لا توجد طلبات مطابقة</div>
-              ) : (
-                <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {filteredOrders.map((o) => {
-                    const statusCfg = STATUS_UI_CONFIG[o.status] || STATUS_UI_CONFIG.pending
-                    return (
-                      <div
-                        key={o.id}
-                        className="p-3 bg-gray-50 border border-gray-200 rounded-2xl flex items-center justify-between text-xs"
-                      >
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-black text-gray-900">#{o.order_number}</span>
-                            <span className="text-gray-600 font-bold">{o.customer_name}</span>
-                            <span className="text-amber-700 font-black tabular-nums">{o.total_amount} ج.م</span>
-                          </div>
-                          {o.assigned_driver && (
-                            <span className="text-[10px] text-indigo-700 font-bold block mt-0.5">
-                              الطيار: {o.assigned_driver.driver_name}
-                            </span>
-                          )}
-                        </div>
-
-                        <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${statusCfg.bgColor} ${statusCfg.color} ${statusCfg.borderColor}`}>
-                          {statusCfg.label}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* TAB 5: FLEET */}
-          {activeTab === 'fleet' && (
-            <div className="p-5 space-y-4">
-              <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                <h3 className="text-sm font-black text-gray-900">حالة طاقم الطيارين ({drivers.length})</h3>
-                <Link href="/drivers" className="text-xs font-bold text-amber-700 hover:underline">
-                  مركز الطيارين ➔
-                </Link>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {drivers.map((d) => (
-                  <div key={d.id} className="p-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-xs space-y-1.5">
-                    <div className="flex justify-between items-center">
-                      <span className="font-black text-gray-900">{d.name}</span>
-                      <span
-                        className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
-                          d.status === 'available'
-                            ? 'bg-green-100 text-green-800'
-                            : d.status === 'busy'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-gray-200 text-gray-700'
-                        }`}
-                      >
-                        {d.status === 'available' ? '🟢 متاح' : d.status === 'busy' ? '🟡 في رحلة' : '⚪ أوفلاين'}
-                      </span>
-                    </div>
-
-                    <div className="text-[11px] text-gray-500">
-                      الوردية: {d.active_shift_id ? '🟢 مفتوحة' : '🔴 مغلقة'}
-                      {d.current_trip_number && <span className="text-amber-700 font-bold mr-2">• رحلة #{d.current_trip_number}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* MODAL 1: Open Daily Shift */}
-      {showOpenShiftModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-gray-100">
-            <div className="flex justify-between items-center">
-              <h3 className="text-sm font-black text-gray-900">🔓 فتح وردية يومية جديدة للمطعم</h3>
-              <button onClick={() => setShowOpenShiftModal(false)} className="text-xs font-bold text-gray-400 hover:text-gray-700">
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleOpenShift} className="space-y-3.5 text-xs">
+        ) : !activeShift ? (
+          /* =========================================================
+             NO ACTIVE SHIFT: OPEN NEW SHIFT PANEL
+             ========================================================= */
+          <div className="max-w-xl mx-auto py-8 space-y-6">
+            <Card variant="default" className="p-6 text-center space-y-4 border-dashed border-zinc-700">
+              <span className="text-5xl block">🔒</span>
               <div>
-                <label className="block font-bold text-gray-700 mb-1">المسؤول عن فتح الوردية (الكاشير):</label>
-                <select
-                  value={openShiftStaff}
-                  onChange={(e) => setOpenShiftStaff(e.target.value)}
-                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-xs font-bold bg-gray-50 mb-2"
-                >
-                  {staffList.map((s) => (
-                    <option key={s.id} value={s.full_name}>
-                      {s.full_name} ({STAFF_ROLE_LABELS[s.role] || s.role})
-                    </option>
-                  ))}
-                  <option value="other">اسم آخر (يدوي)...</option>
-                </select>
-
-                {openShiftStaff === 'other' && (
-                  <input
-                    type="text"
-                    placeholder="اكتب اسم المسؤول..."
-                    value={customStaffName}
-                    onChange={(e) => setCustomStaffName(e.target.value)}
-                    required
-                    className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-xs font-bold bg-white"
-                  />
-                )}
+                <h2 className="text-lg font-black text-white">لا توجد وردية مفتوحة حالياً</h2>
+                <p className="text-xs text-zinc-400 mt-1">
+                  يجب فتح وردية جديدة لبدء تسجيل الطلبات واستقبال الكاش
+                </p>
               </div>
 
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">العهدة الافتتاحية بالدرج (ج.م):</label>
-                <input
+              {lastClosedShift && (
+                <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-xl text-right text-xs text-zinc-400 space-y-1">
+                  <div className="font-bold text-zinc-300">آخر وردية مغلقة: #{lastClosedShift.shift_number}</div>
+                  <div>المسؤول: {lastClosedShift.opened_by}</div>
+                  <div>تاريخ الإغلاق: {new Date(lastClosedShift.closed_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</div>
+                </div>
+              )}
+
+              <form onSubmit={handleOpenShift} className="text-right space-y-4 pt-4 border-t border-zinc-800">
+                <Input
                   type="number"
-                  min="0"
-                  step="10"
+                  label="عهدة الدرج الافتتاحية (كاش بداية الوردية)"
                   value={initialCashInput}
                   onChange={(e) => setInitialCashInput(e.target.value)}
+                  placeholder="0.00"
+                  min="0"
+                  step="any"
                   required
-                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm font-black bg-gray-50 tabular-nums"
                 />
-              </div>
 
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">ملاحظات افتتاحية (اختياري):</label>
-                <textarea
-                  rows={2}
-                  placeholder="أي ملاحظات حول الوردية أو الخزينة..."
+                <Input
+                  type="text"
+                  label="ملاحظات افتتاح الوردية (اختياري)"
                   value={openShiftNotes}
                   onChange={(e) => setOpenShiftNotes(e.target.value)}
-                  className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-xs font-medium bg-gray-50"
+                  placeholder="مثال: استلام الدرج مع عهدة الفكة"
                 />
-              </div>
 
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowOpenShiftModal(false)}
-                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
-                >
-                  إلغاء
-                </button>
-                <button
+                <Button
                   type="submit"
-                  disabled={isSubmittingShift}
-                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black shadow-xs disabled:opacity-50"
+                  variant="primary"
+                  size="lg"
+                  loading={isSubmitting}
+                  className="w-full text-base font-black py-4 bg-emerald-600 hover:bg-emerald-500 border-emerald-500"
                 >
-                  {isSubmittingShift ? 'جاري الفتح...' : 'تأكيد فتح الوردية ✓'}
-                </button>
-              </div>
-            </form>
+                  🟢 فتح الوردية وبدء التشغيل
+                </Button>
+              </form>
+            </Card>
           </div>
-        </div>
-      )}
+        ) : (
+          /* =========================================================
+             ACTIVE SHIFT CONTROL HUB
+             ========================================================= */
+          <div className="space-y-4">
+            {/* Top 4 Industrial KPIs */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3.5">
+              <Card variant="default" className="p-3 sm:p-4">
+                <div className="text-[11px] font-bold text-zinc-400">النقد الفعلي المتوقع بالدرج</div>
+                <div className="mt-1">
+                  <MoneyDisplay amount={activeShift.systemExpectedCash} size="lg" variant="emerald" />
+                </div>
+                <div className="text-[10px] text-zinc-500 mt-0.5">شامل الافتتاحي والمبيعات - المصروفات</div>
+              </Card>
 
-      {/* MODAL 2: Close Daily Shift (Z-Report) */}
-      {showCloseShiftModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-gray-100">
-            <div className="flex justify-between items-center">
-              <h3 className="text-sm font-black text-red-700">🔒 تقفيل الوردية اليومية (Z-Report)</h3>
-              <button onClick={() => setShowCloseShiftModal(false)} className="text-xs font-bold text-gray-400 hover:text-gray-700">
-                ✕
-              </button>
+              <Card variant="default" className="p-3 sm:p-4">
+                <div className="text-[11px] font-bold text-zinc-400">مبيعات كاش موردة للدرج</div>
+                <div className="mt-1">
+                  <MoneyDisplay amount={activeShift.cashSales || 0} size="lg" variant="white" />
+                </div>
+                <div className="text-[10px] text-zinc-500 mt-0.5">كاش تم تحصيله وتوريده للخزينة</div>
+              </Card>
+
+              <Card variant="default" className="p-3 sm:p-4">
+                <div className="text-[11px] font-bold text-zinc-400">إجمالي المصروفات والسلف</div>
+                <div className="mt-1">
+                  <MoneyDisplay amount={activeShift.totalExpenses || 0} size="lg" variant="red" />
+                </div>
+                <div className="text-[10px] text-zinc-500 mt-0.5">{shiftExpenses.length} بنود مسجلة</div>
+              </Card>
+
+              <Card variant="default" className="p-3 sm:p-4">
+                <div className="text-[11px] font-bold text-zinc-400">عهدة معلقة مع الطيارين</div>
+                <div className="mt-1">
+                  <MoneyDisplay amount={activeShift.driverCustodyCash || 0} size="lg" variant="amber" />
+                </div>
+                <div className="text-[10px] text-zinc-500 mt-0.5">تحصيلات طلبات لم تورد للكاشير</div>
+              </Card>
             </div>
 
-            {closureIssues.length > 0 && (
-              <div className="bg-rose-50 border border-rose-200 p-3 rounded-2xl text-xs text-rose-900 space-y-1">
-                <span className="font-bold block">⚠️ تنبيهات أمان قبل الإغلاق:</span>
-                <ul className="list-disc list-inside space-y-0.5 text-[11px]">
-                  {closureIssues.map((issue, idx) => (
-                    <li key={idx}>{issue}</li>
-                  ))}
-                </ul>
+            {/* Navigation Tabs & Fast Actions */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900 border border-zinc-800 p-3 sm:p-4 rounded-2xl shadow-sm">
+              <TabNav
+                tabs={tabs}
+                activeTab={activeTab}
+                onChange={(tabId) => setActiveTab(tabId as ShiftHubTab)}
+              />
+
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowExpenseModal(true)}
+                  className="font-bold whitespace-nowrap"
+                >
+                  ➕ سلفة / مصروف
+                </Button>
+
+                <Link href="/reports">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="font-bold text-zinc-300 whitespace-nowrap"
+                  >
+                    📄 تقرير Z
+                  </Button>
+                </Link>
+              </div>
+            </div>
+
+            {/* TAB CONTENT 1: CASH RECONCILIATION */}
+            {activeTab === 'reconciliation' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Left 2 Cols: Cash Denomination Calculator */}
+                <div className="lg:col-span-2 space-y-4">
+                  <Card variant="default" className="p-4 sm:p-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                        <span>🧮</span>
+                        <span>حاسبة جرد فئات النقدية بالدرج</span>
+                      </h3>
+
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setUseManualCount(!useManualCount)}
+                        className="text-xs text-zinc-400"
+                      >
+                        {useManualCount ? 'التبديل إلى جرد الفئات' : 'إدخال رقم إجمالي مباشر'}
+                      </Button>
+                    </div>
+
+                    {useManualCount ? (
+                      <div className="pt-2">
+                        <Input
+                          type="number"
+                          label="إجمالي النقد الفعلي بالدرج (ج.م)"
+                          value={manualCountOverride}
+                          onChange={(e) => setManualCountOverride(e.target.value)}
+                          placeholder="0.00"
+                          min="0"
+                          step="any"
+                        />
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-2">
+                        {DENOMINATIONS.map((denom) => {
+                          const count = cashCounts[denom] || 0
+                          const sub = denom * count
+                          return (
+                            <div
+                              key={denom}
+                              className="bg-zinc-950 border border-zinc-800 p-2.5 rounded-xl space-y-1.5 focus-within:border-zinc-600 transition-all"
+                            >
+                              <div className="flex items-center justify-between text-[11px] font-bold">
+                                <span className="text-zinc-400">فئة {denom} ج.م</span>
+                                <span className="text-emerald-400 font-mono">{sub} ج.م</span>
+                              </div>
+                              <input
+                                type="number"
+                                min="0"
+                                value={count === 0 ? '' : count}
+                                onChange={(e) => {
+                                  const val = Math.max(0, parseInt(e.target.value) || 0)
+                                  setCashCounts((prev) => ({ ...prev, [denom]: val }))
+                                }}
+                                placeholder="0"
+                                className="w-full bg-zinc-900 border border-zinc-700 text-white font-mono font-bold text-center text-sm py-1.5 rounded-lg focus:outline-hidden focus:border-emerald-500"
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    <div className="flex justify-end pt-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setCashCounts({ 200: 0, 100: 0, 50: 0, 20: 0, 10: 0, 5: 0, 1: 0 })
+                          setManualCountOverride('')
+                        }}
+                        className="text-xs text-zinc-500 hover:text-zinc-300"
+                      >
+                        تفريغ العداد ↺
+                      </Button>
+                    </div>
+                  </Card>
+                </div>
+
+                {/* Right Col: Reconciliation Summary & Primary Close Action */}
+                <div className="space-y-4">
+                  <Card variant="default" className="p-4 sm:p-5 space-y-4">
+                    <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                      <span>⚖️</span>
+                      <span>نتيجة المطابقة الفورية</span>
+                    </h3>
+
+                    <div className="space-y-3 text-xs">
+                      <div className="flex justify-between py-2 border-b border-zinc-800">
+                        <span className="text-zinc-400">الرصيد المحسوب نظامياً:</span>
+                        <MoneyDisplay amount={systemExpected} size="sm" variant="white" />
+                      </div>
+
+                      <div className="flex justify-between py-2 border-b border-zinc-800">
+                        <span className="text-zinc-400">المبلغ الفعلي المج رود:</span>
+                        <div>
+                          <MoneyDisplay amount={countedCash} size="sm" variant="emerald" />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between py-2.5 items-center font-bold">
+                        <span className="text-zinc-300">الفرق (عجز / زيادة):</span>
+                        <div className="flex items-center gap-1.5">
+                          {cashVariance === 0 ? (
+                            <Badge variant="open">مطابق تماماً (0 ج.م)</Badge>
+                          ) : cashVariance < 0 ? (
+                            <Badge variant="danger">عجز {Math.abs(cashVariance)} ج.م</Badge>
+                          ) : (
+                            <Badge variant="processing">زيادة +{cashVariance} ج.م</Badge>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Primary Close Shift CTA */}
+                    <div className="pt-3 border-t border-zinc-800 space-y-2">
+                      <Button
+                        variant="danger"
+                        size="lg"
+                        onClick={() => setShowCloseShiftModal(true)}
+                        className="w-full font-black py-3 text-sm shadow-md"
+                      >
+                        🔒 إغلاق الوردية وترحيل الحسابات
+                      </Button>
+                      <p className="text-[10px] text-zinc-500 text-center">
+                        المسؤول الحالي: {currentStaff?.full_name} ({currentStaff?.role})
+                      </p>
+                    </div>
+                  </Card>
+                </div>
               </div>
             )}
 
-            <form onSubmit={handleCloseShift} className="space-y-3.5 text-xs">
-              <div className="bg-gray-50 p-3 rounded-2xl border border-gray-200 space-y-1.5">
-                <div className="flex justify-between items-center">
-                  <span className="text-gray-600">المبلغ المتوقع بالدرج:</span>
-                  <span className="font-black text-amber-700 tabular-nums">{expectedCashForModal.toLocaleString()} ج.م</span>
+            {/* TAB CONTENT 2: EXPENSES & ADVANCES */}
+            {activeTab === 'expenses' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-zinc-400">
+                    إجمالي المصروفات والسلف: <span className="font-bold text-white font-mono">{activeShift.totalExpenses || 0} ج.م</span>
+                  </div>
+
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={() => setShowExpenseModal(true)}
+                    className="font-bold"
+                  >
+                    ➕ إضافة سلفة / مصروف جديد
+                  </Button>
                 </div>
-                {actualCashInput !== '' && (
-                  <div className="flex justify-between items-center pt-1 border-t border-gray-200">
-                    <span className="font-bold">المطابقة (الفارق):</span>
-                    <span
-                      className={`font-black tabular-nums ${
-                        discrepancy === 0 ? 'text-emerald-600' : discrepancy > 0 ? 'text-blue-600' : 'text-red-600'
-                      }`}
-                    >
-                      {discrepancy === 0 ? 'مطابق تماماً ✓' : discrepancy > 0 ? `+${discrepancy} ج.م (زيادة)` : `${discrepancy} ج.م (عجز)`}
-                    </span>
+
+                {shiftExpenses.length === 0 ? (
+                  <Card variant="flat" className="py-16 text-center text-xs text-zinc-400">
+                    <span className="text-3xl block mb-2">💸</span>
+                    <span className="font-bold text-sm text-zinc-300">لا توجد مصروفات أو سلف مسجلة في هذه الوردية</span>
+                  </Card>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {shiftExpenses.map((item) => {
+                      const isAdvance = item.category.includes('سلف')
+                      return (
+                        <Card key={item.id} variant="default" className="p-3.5 space-y-2">
+                          <div className="flex items-start justify-between">
+                            <Badge variant={isAdvance ? 'processing' : 'neutral'}>
+                              {item.category}
+                            </Badge>
+                            <div className="text-red-400 font-bold font-mono text-sm">
+                              -{item.amount} ج.م
+                            </div>
+                          </div>
+
+                          <div className="text-xs text-zinc-200 font-bold">
+                            {item.description}
+                          </div>
+
+                          {item.recipient_name && (
+                            <div className="text-[11px] text-zinc-400">
+                              المستلم: <span className="text-zinc-300 font-bold">{item.recipient_name}</span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between text-[10px] text-zinc-500 pt-1 border-t border-zinc-800">
+                            <span>مسجل بواسطة: {item.recorded_by || 'الكاشير'}</span>
+                            <span>{new Date(item.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                        </Card>
+                      )
+                    })}
                   </div>
                 )}
               </div>
+            )}
 
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">المبلغ الفعلي الموجود بالدرج بعد الجرد (ج.م):</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.5"
-                  value={actualCashInput}
-                  onChange={(e) => setActualCashInput(e.target.value)}
-                  placeholder="أدخل نقدية الدرج الفعلية..."
-                  required
-                  autoFocus
-                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm font-black bg-gray-50 tabular-nums focus:bg-white"
-                />
-              </div>
+            {/* TAB CONTENT 3: SHIFT ORDERS */}
+            {activeTab === 'orders' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <input
+                    type="text"
+                    value={orderSearchQuery}
+                    onChange={(e) => setOrderSearchQuery(e.target.value)}
+                    placeholder="🔍 بحث برقم الطلب أو اسم العميل أو الهاتف..."
+                    className="w-full sm:max-w-md bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 placeholder-zinc-500 px-3.5 py-2.5 rounded-xl focus:outline-hidden focus:border-zinc-700"
+                  />
+                  <div className="text-xs text-zinc-400 whitespace-nowrap">
+                    العدد: <span className="font-bold text-white font-mono">{filteredOrders.length}</span>
+                  </div>
+                </div>
 
-              <div>
-                <label className="block font-bold text-gray-700 mb-1">ملاحظات التقفيل النهائي:</label>
-                <textarea
-                  rows={2}
-                  placeholder="سبب أي عجز أو زيادة أو ملاحظات..."
-                  value={closeShiftNotes}
-                  onChange={(e) => setCloseShiftNotes(e.target.value)}
-                  className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-xs font-medium bg-gray-50"
-                />
-              </div>
+                {filteredOrders.length === 0 ? (
+                  <Card variant="flat" className="py-16 text-center text-xs text-zinc-400">
+                    <span className="text-3xl block mb-2">📦</span>
+                    <span className="font-bold text-sm text-zinc-300">لا توجد طلبات مطابقة</span>
+                  </Card>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {filteredOrders.map((ord) => {
+                      const uiConfig = STATUS_UI_CONFIG[ord.status] || {
+                        label: ord.status,
+                        bgColor: 'bg-zinc-800',
+                        color: 'text-zinc-400',
+                        borderColor: 'border-zinc-700',
+                      }
 
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCloseShiftModal(false)}
-                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingShift || actualCashInput === ''}
-                  className="px-5 py-2 rounded-xl bg-red-700 hover:bg-red-800 text-white text-xs font-black shadow-xs disabled:opacity-50"
-                >
-                  {isSubmittingShift ? 'جاري التقفيل...' : 'تأكيد إغلاق الوردية ✓'}
-                </button>
+                      return (
+                        <Card key={ord.id} variant="default" className="p-3.5 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono font-bold text-sm text-white">#{ord.order_number}</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${uiConfig.bgColor} ${uiConfig.color} ${uiConfig.borderColor}`}>
+                              {uiConfig.label}
+                            </span>
+                          </div>
+
+                          <div className="text-xs text-zinc-300 font-bold">
+                            {ord.customer_name} · <span className="font-mono text-zinc-400">{ord.customer_phone}</span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-xs pt-1 border-t border-zinc-800">
+                            <span className="text-zinc-500 font-mono">
+                              {ord.order_type === 'delivery' ? '🛵 دليفري' : '🥡 تيك أواي'} · {ord.payment_method || 'كاش'}
+                            </span>
+                            <MoneyDisplay amount={ord.total_amount} size="sm" variant="white" />
+                          </div>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
-            </form>
+            )}
+
+            {/* TAB CONTENT 4: READINESS & CLOSURE GUARD */}
+            {activeTab === 'readiness' && (
+              <div className="max-w-2xl mx-auto space-y-4">
+                <Card variant="default" className="p-5 space-y-4">
+                  <h3 className="font-bold text-sm text-white flex items-center gap-2">
+                    <span>🛡️</span>
+                    <span>قائمة التحقق الأمني والتشغيلي قبل الإغلاق</span>
+                  </h3>
+
+                  <div className="space-y-3 text-xs">
+                    {/* Check 1: Operating Hours */}
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <div>
+                        <div className="font-bold text-zinc-200">مواعيد العمل الرسمية للمطعم</div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5">
+                          {isStoreClosed ? 'المطعم في فترة الإغلاق الرسمي' : 'المطعم مفتوح حالياً لاستقبال الطلبات'}
+                        </div>
+                      </div>
+                      <Badge variant={isStoreClosed ? 'open' : 'processing'}>
+                        {isStoreClosed ? 'جاهز للإغلاق' : 'مفتوح للعمل'}
+                      </Badge>
+                    </div>
+
+                    {/* Check 2: Unresolved Orders */}
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <div>
+                        <div className="font-bold text-zinc-200">حسم جميع طلبات الوردية</div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5">
+                          {unresolvedOrders.length === 0
+                            ? 'تم تسليم أو حسم كافة الطلبات'
+                            : `يوجد ${unresolvedOrders.length} طلبات قيد التجهيز أو في الطريق`}
+                        </div>
+                      </div>
+                      <Badge variant={unresolvedOrders.length === 0 ? 'open' : 'danger'}>
+                        {unresolvedOrders.length === 0 ? 'مكتمل' : `${unresolvedOrders.length} معلق`}
+                      </Badge>
+                    </div>
+
+                    {/* Check 3: Staff Role Permission */}
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-900 border border-zinc-800">
+                      <div>
+                        <div className="font-bold text-zinc-200">صلاحية الموظف المسؤول</div>
+                        <div className="text-[11px] text-zinc-400 mt-0.5">
+                          {currentStaff?.full_name} ({currentStaff?.role})
+                        </div>
+                      </div>
+                      <Badge variant={canClose ? 'open' : 'danger'}>
+                        {canClose ? 'مصرّح له' : 'غير مصرّح'}
+                      </Badge>
+                    </div>
+                  </div>
+
+                  {/* Z-Report Link & Close Shift Button */}
+                  <div className="pt-4 border-t border-zinc-800 flex flex-col sm:flex-row items-center gap-3">
+                    <Link href="/reports" className="w-full sm:w-1/2">
+                      <Button variant="secondary" size="md" className="w-full font-bold">
+                        📄 معاينة تقرير Z-Report
+                      </Button>
+                    </Link>
+
+                    <Button
+                      variant="danger"
+                      size="md"
+                      onClick={() => setShowCloseShiftModal(true)}
+                      className="w-full sm:w-1/2 font-bold"
+                    >
+                      🔒 إغلاق الوردية الآن
+                    </Button>
+                  </div>
+                </Card>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </main>
 
-      {/* MODAL 3: Record Expense / Advance */}
-      {showExpenseModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-gray-100">
-            <div className="flex justify-between items-center">
-              <h3 className="text-sm font-black text-gray-900">💸 تسجيل مصروف أو سلفة بالوردية</h3>
-              <button onClick={() => setShowExpenseModal(false)} className="text-xs font-bold text-gray-400 hover:text-gray-700">
-                ✕
-              </button>
+      {/* =========================================================
+          MODAL: RECORD EXPENSE / ADVANCE
+          ========================================================= */}
+      <Modal
+        isOpen={showExpenseModal}
+        onClose={() => setShowExpenseModal(false)}
+        title="➕ تسجيل مصروف أو سلفة من الدرج"
+        maxWidth="md"
+      >
+        <form onSubmit={handleRecordExpense} className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-zinc-300 mb-1.5">فئة المصروف</label>
+            <select
+              value={expenseCategory}
+              onChange={(e) => setExpenseCategory(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 text-xs text-white px-3.5 py-2.5 rounded-xl focus:outline-hidden focus:border-zinc-700"
+            >
+              <option value="مصروف عام">مصروف عام / مشتريات تشغيل</option>
+              <option value="سلف طيارين">سلفة طيار</option>
+              <option value="سلف موظفين">سلفة موظف</option>
+            </select>
+          </div>
+
+          <Input
+            type="number"
+            label="المبلغ المسحوب من الدرج (ج.م)"
+            value={expenseAmount}
+            onChange={(e) => setExpenseAmount(e.target.value)}
+            placeholder="0.00"
+            min="1"
+            step="any"
+            required
+          />
+
+          {expenseCategory === 'سلف طيارين' && (
+            <div>
+              <label className="block text-xs font-bold text-zinc-300 mb-1.5">اختر الطيار</label>
+              <select
+                value={expenseSelectedDriverId}
+                onChange={(e) => setExpenseSelectedDriverId(e.target.value)}
+                className="w-full bg-zinc-900 border border-zinc-800 text-xs text-white px-3.5 py-2.5 rounded-xl focus:outline-hidden focus:border-zinc-700"
+                required
+              >
+                <option value="">-- اختر الطيار من القائمة --</option>
+                {driverList.map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </select>
             </div>
+          )}
 
-            <form onSubmit={handleAddExpense} className="space-y-3 text-xs">
-              <div className="flex gap-2 bg-gray-100 p-1 rounded-xl">
-                <button
-                  type="button"
-                  onClick={() => setExpenseType('advance')}
-                  className={`flex-1 py-1.5 rounded-lg font-bold transition-all ${
-                    expenseType === 'advance' ? 'bg-amber-600 text-white shadow-xs' : 'text-gray-600'
-                  }`}
-                >
-                  سلفة موظف / طيار
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setExpenseType('operational')}
-                  className={`flex-1 py-1.5 rounded-lg font-bold transition-all ${
-                    expenseType === 'operational' ? 'bg-amber-600 text-white shadow-xs' : 'text-gray-600'
-                  }`}
-                >
-                  مصروف تشغيلي / مشتريات
-                </button>
-              </div>
+          {expenseCategory === 'سلف موظفين' && (
+            <div>
+              <label className="block text-xs font-bold text-zinc-300 mb-1.5">اختر الموظف</label>
+              <select
+                value={expenseSelectedStaffId}
+                onChange={(e) => setExpenseSelectedStaffId(e.target.value)}
+                className="w-full bg-zinc-900 border border-zinc-800 text-xs text-white px-3.5 py-2.5 rounded-xl focus:outline-hidden focus:border-zinc-700"
+                required
+              >
+                <option value="">-- اختر الموظف من القائمة --</option>
+                {staffList.map((s) => (
+                  <option key={s.id} value={s.id}>{s.full_name} ({s.role})</option>
+                ))}
+              </select>
+            </div>
+          )}
 
-              {expenseType === 'advance' ? (
-                <>
-                  <div>
-                    <label className="block font-bold text-gray-700 mb-1">المستلم للسلفة:</label>
-                    <select
-                      value={selectedPersonKey}
-                      onChange={(e) => setSelectedPersonKey(e.target.value)}
-                      required
-                      className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-xs font-bold bg-gray-50"
-                    >
-                      <option value="">-- اختر من طاقم العمل أو الطيارين --</option>
-                      <optgroup label="🛵 الطيارون">
-                        {drivers.map((d) => (
-                          <option key={`driver_${d.id}`} value={`driver_${d.id}`}>
-                            {d.name} (طيار)
-                          </option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="👤 طاقم المطعم">
-                        {staffList.map((s) => (
-                          <option key={`staff_${s.id}`} value={`staff_${s.id}`}>
-                            {s.full_name} ({STAFF_ROLE_LABELS[s.role] || s.role})
-                          </option>
-                        ))}
-                      </optgroup>
-                      <option value="other">شخص آخر...</option>
-                    </select>
-                  </div>
+          {expenseCategory === 'مصروف عام' && (
+            <Input
+              type="text"
+              label="اسم المستلم / المورد (اختياري)"
+              value={expenseRecipient}
+              onChange={(e) => setExpenseRecipient(e.target.value)}
+              placeholder="مثال: مورد الخضار / كهربائي"
+            />
+          )}
 
-                  {selectedPersonKey === 'other' && (
-                    <input
-                      type="text"
-                      placeholder="اسم المستلم..."
-                      value={advanceCustomName}
-                      onChange={(e) => setAdvanceCustomName(e.target.value)}
-                      required
-                      className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-xs font-bold bg-white"
-                    />
-                  )}
+          <Input
+            type="text"
+            label="البيان / سبب الصرف"
+            value={expenseDescription}
+            onChange={(e) => setExpenseDescription(e.target.value)}
+            placeholder="مثال: شراء أكياس تعبئة وورق فويل"
+            required
+          />
 
-                  <div>
-                    <label className="block font-bold text-gray-700 mb-1">بيان / سبب السلفة:</label>
-                    <input
-                      type="text"
-                      placeholder="سبب السلفة (اختياري)..."
-                      value={advanceReason}
-                      onChange={(e) => setAdvanceReason(e.target.value)}
-                      className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-xs font-medium bg-gray-50"
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <label className="block font-bold text-gray-700 mb-1">تصنيف المصروف:</label>
-                    <select
-                      value={expenseCategory}
-                      onChange={(e) => setExpenseCategory(e.target.value)}
-                      className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-xs font-bold bg-gray-50"
-                    >
-                      <option value="مشتريات خضار ومستلزمات">مشتريات خضار ومستلزمات</option>
-                      <option value="نثريات وضيافة">نثريات وضيافة</option>
-                      <option value="صيانة ومعدات">صيانة ومعدات</option>
-                      <option value="وقود ومواصلات">وقود ومواصلات</option>
-                      <option value="مصروفات إدارية">مصروفات إدارية</option>
-                    </select>
-                  </div>
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowExpenseModal(false)}
+            >
+              إلغاء
+            </Button>
+            <Button
+              type="submit"
+              variant="primary"
+              size="sm"
+              loading={isSubmitting}
+              className="font-bold"
+            >
+              حفظ وخصم من الدرج
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
-                  <div>
-                    <label className="block font-bold text-gray-700 mb-1">تفاصيل وبيان المصروف:</label>
-                    <input
-                      type="text"
-                      placeholder="تفاصيل المشتريات..."
-                      value={expenseDesc}
-                      onChange={(e) => setExpenseDesc(e.target.value)}
-                      required
-                      className="w-full px-3.5 py-2 border border-gray-200 rounded-xl text-xs font-medium bg-gray-50"
-                    />
-                  </div>
-                </>
-              )}
-
+      {/* =========================================================
+          MODAL: CLOSE SHIFT CONFIRMATION
+          ========================================================= */}
+      <Modal
+        isOpen={showCloseShiftModal}
+        onClose={() => setShowCloseShiftModal(false)}
+        title="🔒 تأكيد إغلاق الوردية وترحيل الحسابات"
+        maxWidth="md"
+      >
+        <div className="space-y-4 text-xs">
+          <div className="bg-zinc-900 border border-zinc-800 p-3.5 rounded-xl space-y-2">
+            <div className="flex justify-between">
+              <span className="text-zinc-400">الرصيد المحسوب نظامياً:</span>
+              <MoneyDisplay amount={systemExpected} size="sm" variant="white" />
+            </div>
+            <div className="flex justify-between">
+              <span className="text-zinc-400">النقد الفعلي المج رود:</span>
               <div>
-                <label className="block font-bold text-gray-700 mb-1">المبلغ (ج.م):</label>
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  placeholder="المبلغ المدفوع كاش..."
-                  value={expenseAmount}
-                  onChange={(e) => setExpenseAmount(e.target.value)}
-                  required
-                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm font-black bg-gray-50 tabular-nums focus:bg-white"
-                />
+                <MoneyDisplay amount={countedCash} size="sm" variant="emerald" />
               </div>
+            </div>
+            <div className="flex justify-between font-bold pt-1 border-t border-zinc-800">
+              <span className="text-zinc-300">الفرق المالي:</span>
+              <span>
+                {cashVariance === 0
+                  ? 'مطابق (0 ج.م)'
+                  : cashVariance < 0
+                  ? `عجز ${Math.abs(cashVariance)} ج.م`
+                  : `زيادة +${cashVariance} ج.م`}
+              </span>
+            </div>
+          </div>
 
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowExpenseModal(false)}
-                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
-                >
-                  إلغاء
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingExpense || !expenseAmount}
-                  className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black shadow-xs disabled:opacity-50"
-                >
-                  {isSubmittingExpense ? 'جاري الحفظ...' : 'تسجيل وخصم من الدرج ✓'}
-                </button>
-              </div>
-            </form>
+          <Input
+            type="text"
+            label="ملاحظات الإغلاق أو سبب العجز/الزيادة (إن وجد)"
+            value={closeShiftNotes}
+            onChange={(e) => setCloseShiftNotes(e.target.value)}
+            placeholder="مثال: تم تسليم الكاش للمشرف ومطابقة العدادات"
+          />
+
+          <div className="bg-amber-950/40 border border-amber-800/80 p-3 rounded-xl text-amber-200 text-[11px]">
+            ⚠️ تنبيه: إغلاق الوردية هو إجراء نهائي يقوم بترحيل حسابات اليومية وإرسال تقرير Z-Report إلى تليجرام وقفل استقبال الطلبات لهذه الوردية.
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowCloseShiftModal(false)}
+            >
+              تراجع
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              size="md"
+              loading={isSubmitting}
+              onClick={handleCloseShift}
+              className="font-black"
+            >
+              تأكيد إغلاق الوردية
+            </Button>
           </div>
         </div>
-      )}
+      </Modal>
     </div>
   )
 }
