@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { OrderStatus, STATUS_UI_CONFIG } from '@/types/orders'
 import { Driver } from '@/types/drivers'
@@ -135,6 +135,17 @@ export default function AdminAssignmentsPage() {
     }
   }
 
+  const syncDebounceRef = useRef<NodeJS.Timeout | null>(null)
+
+  const scheduleBackgroundSync = useCallback(() => {
+    if (syncDebounceRef.current) {
+      clearTimeout(syncDebounceRef.current)
+    }
+    syncDebounceRef.current = setTimeout(() => {
+      fetchAssignmentData(true)
+    }, 300)
+  }, [fetchAssignmentData])
+
   useEffect(() => {
     const load = async () => {
       await fetchAssignmentData(false)
@@ -143,16 +154,17 @@ export default function AdminAssignmentsPage() {
 
     const channel = supabase
       .channel('admin-assignments-page')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => fetchAssignmentData(true))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => fetchAssignmentData(true))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => fetchAssignmentData(true))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => fetchAssignmentData(true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => scheduleBackgroundSync())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => scheduleBackgroundSync())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => scheduleBackgroundSync())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => scheduleBackgroundSync())
       .subscribe()
 
     return () => {
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current)
       supabase.removeChannel(channel)
     }
-  }, [])
+  }, [fetchAssignmentData, scheduleBackgroundSync])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -433,6 +445,7 @@ export default function AdminAssignmentsPage() {
                                 {new Date(order.created_at).toLocaleTimeString('ar-EG', {
                                   hour: '2-digit',
                                   minute: '2-digit',
+                                  timeZone: 'Africa/Cairo',
                                 })}
                               </p>
                             </div>

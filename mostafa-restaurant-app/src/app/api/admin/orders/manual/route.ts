@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
-import { ADMIN_COOKIE_NAME } from '../../login/route'
+import { ADMIN_COOKIE_NAME, getStaffSession } from '@/lib/staffAuth'
 import { getActiveDailyShift } from '@/lib/shiftGuard'
 
 export const dynamic = 'force-dynamic'
@@ -14,23 +14,17 @@ interface ManualOrderItemInput {
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Authenticate Staff Session
-    let sessionCookieValue: string | undefined = request.cookies?.get(ADMIN_COOKIE_NAME)?.value
-    if (!sessionCookieValue) {
-      try {
-        const cookieStore = await cookies()
-        sessionCookieValue = cookieStore.get(ADMIN_COOKIE_NAME)?.value
-      } catch {}
-    }
+    const cookieStore = await cookies()
+    const serverSupabase = getSupabaseServerClient()
 
-    if (!sessionCookieValue || !sessionCookieValue.startsWith('staff_auth_')) {
+    // 1. Authenticate Staff Session strictly Server-Side
+    const { staff: currentStaff, error: authErr, status: authStatus } = await getStaffSession(serverSupabase, cookieStore)
+    if (authErr || !currentStaff) {
       return NextResponse.json(
-        { error: 'غير مصرح الوصول. يرجى تسجيل الدخول بكود الكاشير.' },
-        { status: 401 }
+        { error: authErr || 'غير مصرح الوصول. يرجى تسجيل الدخول كعضو في طاقم العمل.' },
+        { status: authStatus || 401 }
       )
     }
-
-    const serverSupabase = getSupabaseServerClient()
 
     // 2. Fetch Open Daily Shift Server-Side
     const shiftCheck = await getActiveDailyShift(serverSupabase)
@@ -41,8 +35,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Determine staff identity from shift or fallback
-    const authenticatedStaff = shiftCheck.openedBy || 'كاشير الوردية'
+    // Determine staff identity strictly from server-side authenticated session
+    const authenticatedStaff = currentStaff.full_name
 
     // 3. Parse & Validate Client Payload
     const body = await request.json()

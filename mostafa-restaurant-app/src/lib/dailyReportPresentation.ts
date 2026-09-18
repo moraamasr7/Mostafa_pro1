@@ -57,6 +57,8 @@ export interface FinalDailyReportPayload {
     delivery_orders_count: number
     takeaway_sales: number
     takeaway_orders_count: number
+    product_sales: number
+    delivery_fees_total: number
     cancelled_orders_count: number
     cancelled_amount: number
     failed_orders_count: number
@@ -133,6 +135,30 @@ export async function buildFinalDailyReport(
     ? Math.round((accounting.total_sales / accounting.completed_orders_count) * 100) / 100 
     : 0
 
+  // 4. Calculate Delivery Fees & Product Subtotal for Presentation Breakdown
+  let { data: shiftOrders } = await supabase
+    .from('orders')
+    .select('delivery_fee, status, order_type')
+    .eq('daily_shift_id', shiftId)
+
+  if ((!shiftOrders || shiftOrders.length === 0) && accounting.status === 'closed' && accounting.closed_at) {
+    const { data: fallbackOrders } = await supabase
+      .from('orders')
+      .select('delivery_fee, status, order_type')
+      .gte('created_at', accounting.opened_at)
+      .lte('created_at', accounting.closed_at)
+    shiftOrders = fallbackOrders || []
+  }
+
+  let totalDeliveryFees = 0
+  for (const o of (shiftOrders || [])) {
+    if (['completed', 'delivered'].includes(o.status) && o.order_type === 'delivery') {
+      totalDeliveryFees += Number(o.delivery_fee || 0)
+    }
+  }
+  totalDeliveryFees = Math.round(totalDeliveryFees * 100) / 100
+  const productSales = Math.round(Math.max(0, accounting.total_sales - totalDeliveryFees) * 100) / 100
+
   return {
     metadata: {
       generated_at: new Date().toISOString(),
@@ -186,6 +212,8 @@ export async function buildFinalDailyReport(
       delivery_orders_count: accounting.delivery_orders_count,
       takeaway_sales: accounting.takeaway_sales,
       takeaway_orders_count: accounting.takeaway_orders_count,
+      product_sales: productSales,
+      delivery_fees_total: totalDeliveryFees,
       cancelled_orders_count: accounting.cancelled_orders_count,
       cancelled_amount: accounting.cancelled_amount,
       failed_orders_count: accounting.failed_orders_count,

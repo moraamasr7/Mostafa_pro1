@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
-import { ADMIN_COOKIE_NAME } from '../login/route'
+import { ADMIN_COOKIE_NAME, getStaffSession } from '@/lib/staffAuth'
 import { notifyExpenseRecorded } from '@/lib/telegram'
 
 export const dynamic = 'force-dynamic'
@@ -9,16 +9,16 @@ export const dynamic = 'force-dynamic'
 export async function GET(request: NextRequest) {
   try {
     const cookieStore = await cookies()
-    const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME)
+    const serverSupabase = getSupabaseServerClient()
 
-    if (!sessionCookie || !sessionCookie.value.startsWith('staff_auth_')) {
-      return NextResponse.json({ error: 'غير مصرح الوصول.' }, { status: 401 })
+    const { staff: currentStaff, error: authErr, status: authStatus } = await getStaffSession(serverSupabase, cookieStore)
+    if (authErr || !currentStaff) {
+      return NextResponse.json({ error: 'غير مصرح الوصول.' }, { status: authStatus || 401 })
     }
 
     const { searchParams } = new URL(request.url)
     const shiftId = searchParams.get('shift_id')
 
-    const serverSupabase = getSupabaseServerClient()
     let query = serverSupabase
       .from('shift_expenses')
       .select('*')
@@ -45,14 +45,18 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const cookieStore = await cookies()
-    const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME)
+    const serverSupabase = getSupabaseServerClient()
 
-    if (!sessionCookie || !sessionCookie.value.startsWith('staff_auth_')) {
-      return NextResponse.json({ error: 'غير مصرح الوصول.' }, { status: 401 })
+    const { staff: currentStaff, error: authErr, status: authStatus } = await getStaffSession(serverSupabase, cookieStore)
+    if (authErr || !currentStaff) {
+      return NextResponse.json(
+        { error: authErr || 'غير مصرح الوصول. يرجى تسجيل الدخول كعضو في طاقم العمل.' },
+        { status: authStatus || 401 }
+      )
     }
 
     const body = await request.json()
-    const { category, amount, description, recipient_name, recorded_by, driver_id, staff_id } = body
+    const { category, amount, description, recipient_name, driver_id, staff_id } = body
 
     if (!category || !description || typeof description !== 'string') {
       return NextResponse.json({ error: 'البند وتفاصيل الصرف مطلوبان' }, { status: 400 })
@@ -62,8 +66,6 @@ export async function POST(request: NextRequest) {
     if (isNaN(numAmount) || numAmount <= 0) {
       return NextResponse.json({ error: 'المبلغ يجب أن يكون رقماً أكبر من صفر' }, { status: 400 })
     }
-
-    const serverSupabase = getSupabaseServerClient()
 
     // Find active daily shift
     const { data: activeShift } = await serverSupabase
@@ -79,7 +81,8 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    const cleanRecordedBy = (recorded_by && String(recorded_by).trim()) || 'كاشير الوردية'
+    // Server-side authenticated operator identity (ignores any client-supplied recorded_by)
+    const cleanRecordedBy = currentStaff.full_name
     let finalRecipientName = recipient_name?.trim() || null
     const validDriverId = (driver_id && String(driver_id).trim()) || null
     const validStaffId = (staff_id && String(staff_id).trim()) || null

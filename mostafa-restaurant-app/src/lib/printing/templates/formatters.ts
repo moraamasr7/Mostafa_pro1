@@ -53,11 +53,13 @@ export function formatDateTime(isoString: string): { dateStr: string; timeStr: s
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
+      timeZone: 'Africa/Cairo',
     })
     const timeStr = d.toLocaleTimeString('ar-EG', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: true,
+      timeZone: 'Africa/Cairo',
     })
     return { dateStr, timeStr }
   } catch {

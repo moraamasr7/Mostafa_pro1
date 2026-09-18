@@ -28,6 +28,8 @@ interface CanonicalReportData {
   deliveryOrdersCount: number
   takeawaySales: number
   takeawayOrdersCount: number
+  productSales?: number
+  deliveryFeesTotal?: number
   initialCash: number
   totalExpenses: number
   generalExpenses: number
@@ -279,6 +281,7 @@ export default function ReportsExecutiveCenterPage() {
                       day: 'numeric',
                       hour: '2-digit',
                       minute: '2-digit',
+                      timeZone: 'Africa/Cairo',
                     })
                   : '—'}{' '}
                 • المدة: <strong className="text-zinc-200">{shiftDurationLabel}</strong>
@@ -632,18 +635,37 @@ export default function ReportsExecutiveCenterPage() {
                   </div>
                 )}
 
-                {/* Sales by Channel */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-2">
-                    <h5 className="font-black text-gray-900">🏪 مبيعات الصالة والاستلام (Takeaway & Dine-in)</h5>
-                    <p className="text-gray-600">إجمالي الطلبات: <strong className="text-gray-900">{report.takeawayOrdersCount}</strong></p>
-                    <p className="text-gray-600">قيمة المبيعات: <strong className="text-emerald-700">{Number(report.takeawaySales).toLocaleString()} ج.م</strong></p>
+                {/* Sales by Channel & Breakdown */}
+                <div className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-2">
+                      <h5 className="font-black text-gray-900">🏪 مبيعات الصالة والاستلام (Takeaway & Dine-in)</h5>
+                      <p className="text-gray-600">إجمالي الطلبات: <strong className="text-gray-900">{report.takeawayOrdersCount}</strong></p>
+                      <p className="text-gray-600">قيمة المبيعات: <strong className="text-emerald-700">{Number(report.takeawaySales).toLocaleString()} ج.م</strong></p>
+                    </div>
+
+                    <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-2">
+                      <h5 className="font-black text-gray-900">🛵 مبيعات الدليفري والتوصيل (Home Delivery)</h5>
+                      <p className="text-gray-600">إجمالي الطلبات: <strong className="text-gray-900">{report.deliveryOrdersCount}</strong></p>
+                      <p className="text-gray-600">إجمالي مبيعات الدليفري: <strong className="text-purple-700">{Number(report.deliverySales).toLocaleString()} ج.م</strong></p>
+                    </div>
                   </div>
 
-                  <div className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 space-y-2">
-                    <h5 className="font-black text-gray-900">🛵 مبيعات الدليفري والتوصيل (Home Delivery)</h5>
-                    <p className="text-gray-600">إجمالي الطلبات: <strong className="text-gray-900">{report.deliveryOrdersCount}</strong></p>
-                    <p className="text-gray-600">قيمة المبيعات: <strong className="text-purple-700">{Number(report.deliverySales).toLocaleString()} ج.م</strong></p>
+                  {/* Food Subtotal vs Delivery Fees Decomposition */}
+                  <div className="bg-emerald-50/50 p-3.5 rounded-2xl border border-emerald-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="space-y-0.5">
+                      <span className="font-black text-emerald-950 block">💡 تفصيل مبيعات الأصناف وخدمات التوصيل:</span>
+                      <p className="text-emerald-800 text-[11px]">
+                        صافي مبيعات الوجبات والأطعمة (Food Subtotal): <strong className="font-mono text-emerald-900 font-black">{Number(report.productSales || (report.totalSales - (report.deliveryFeesTotal || 0))).toLocaleString()} ج.م</strong>
+                        {(report.deliveryFeesTotal || 0) > 0 && (
+                          <span> • رسوم التوصيل المحصلة (Delivery Fees): <strong className="font-mono text-purple-900 font-black">{Number(report.deliveryFeesTotal).toLocaleString()} ج.م</strong></span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="text-left font-black text-xs text-emerald-900 bg-white px-3 py-1.5 rounded-xl border border-emerald-300">
+                      <span>إجمالي المبيعات (Gross): </span>
+                      <span className="tabular-nums font-mono">{Number(report.totalSales).toLocaleString()} ج.م</span>
+                    </div>
                   </div>
                 </div>
               </div>

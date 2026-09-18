@@ -774,6 +774,7 @@ export default function ShiftControlAndCashPage() {
                       year: 'numeric',
                       month: 'short',
                       day: 'numeric',
+                      timeZone: 'Africa/Cairo',
                     })}
                   </span>
                 </div>
@@ -784,6 +785,7 @@ export default function ShiftControlAndCashPage() {
                     {new Date(dailyShift.opened_at).toLocaleTimeString('ar-EG', {
                       hour: '2-digit',
                       minute: '2-digit',
+                      timeZone: 'Africa/Cairo',
                     })}
                     )
                   </span>
@@ -1096,7 +1098,7 @@ export default function ShiftControlAndCashPage() {
                           -{Number(exp.amount).toFixed(0)} ج.م
                         </span>
                         <span className="text-[10px] text-gray-400">
-                          {new Date(exp.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                          {new Date(exp.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })}
                         </span>
                       </div>
                     </div>

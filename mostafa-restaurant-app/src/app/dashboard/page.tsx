@@ -127,6 +127,7 @@ export default function DashboardCommandCenterPage() {
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
+          timeZone: 'Africa/Cairo',
         }),
       }
 
@@ -147,7 +148,11 @@ export default function DashboardCommandCenterPage() {
     [soundEnabled]
   )
 
-  const fetchCommandCenterData = useCallback(async () => {
+  // Realtime debounce ref
+  const syncDebounceRef = useRef<NodeJS.Timeout | null>(null)
+
+  const fetchCommandCenterData = useCallback(async (isBackground = false) => {
+    if (!isBackground) setLoading(true)
     try {
       const [ordersRes, driversRes, tripsRes, dailyShiftRes] = await Promise.all([
         fetch('/api/admin/orders?status=all'),
@@ -185,13 +190,22 @@ export default function DashboardCommandCenterPage() {
     }
   }, [])
 
+  const scheduleBackgroundSync = useCallback(() => {
+    if (syncDebounceRef.current) {
+      clearTimeout(syncDebounceRef.current)
+    }
+    syncDebounceRef.current = setTimeout(() => {
+      fetchCommandCenterData(true)
+    }, 300)
+  }, [fetchCommandCenterData])
+
   useEffect(() => {
-    fetchCommandCenterData()
+    fetchCommandCenterData(false)
 
     const channel = supabase
       .channel('command-center-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload: any) => {
-        fetchCommandCenterData()
+        scheduleBackgroundSync()
 
         if (payload.eventType === 'INSERT') {
           const orderNum = payload.new?.order_number || ''
@@ -224,24 +238,25 @@ export default function DashboardCommandCenterPage() {
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
-        fetchCommandCenterData()
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_trips' }, () => {
-        fetchCommandCenterData()
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => {
-        fetchCommandCenterData()
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_expenses' }, () => {
-        fetchCommandCenterData()
+        scheduleBackgroundSync()
       })
       .subscribe()
 
     return () => {
       supabase.removeChannel(channel)
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current)
       if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
     }
-  }, [fetchCommandCenterData, triggerAlert])
+  }, [fetchCommandCenterData, scheduleBackgroundSync, triggerAlert])
 
   const handleSendTelegramReport = async () => {
     setIsSendingReport(true)
@@ -469,7 +484,7 @@ export default function DashboardCommandCenterPage() {
             </button>
 
             <button
-              onClick={fetchCommandCenterData}
+              onClick={() => fetchCommandCenterData(false)}
               disabled={loading}
               className="text-xs font-bold bg-zinc-100 hover:bg-zinc-200 text-zinc-800 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
             >
@@ -759,6 +774,7 @@ export default function DashboardCommandCenterPage() {
                             {new Date(order.created_at).toLocaleTimeString('ar-EG', {
                               hour: '2-digit',
                               minute: '2-digit',
+                              timeZone: 'Africa/Cairo',
                             })}{' '}
                             • <strong className="text-gray-800 tabular-nums">{order.total_amount} ج.م</strong>
                             {order.driver_name && (

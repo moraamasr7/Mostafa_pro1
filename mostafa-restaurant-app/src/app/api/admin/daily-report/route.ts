@@ -49,6 +49,8 @@ export async function GET(req: NextRequest) {
       deliveryOrdersCount: finalReport.orders_summary.delivery_orders_count,
       takeawaySales: finalReport.orders_summary.takeaway_sales,
       takeawayOrdersCount: finalReport.orders_summary.takeaway_orders_count,
+      productSales: finalReport.orders_summary.product_sales,
+      deliveryFeesTotal: finalReport.orders_summary.delivery_fees_total,
       initialCash: finalReport.cash_reconciliation.initial_cash,
       totalExpenses: finalReport.expenses_summary.total_expenses,
       generalExpenses: finalReport.expenses_summary.general_expenses,

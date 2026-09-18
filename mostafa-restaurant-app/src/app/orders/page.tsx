@@ -910,6 +910,7 @@ export default function FastOrdersBoardPage() {
                         {new Date(order.created_at).toLocaleTimeString('ar-EG', {
                           hour: '2-digit',
                           minute: '2-digit',
+                          timeZone: 'Africa/Cairo',
                         })}
                       </p>
                     </div>

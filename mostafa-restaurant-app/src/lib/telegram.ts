@@ -80,11 +80,13 @@ export function formatTelegramFinalDailyReport(report: FinalDailyReportPayload):
     `━━━━━━━━━━━━━━━━━━━━`,
     `🔖 <b>حالة الوردية:</b> ${statusEmoji} ${statusLabel}`,
     `👤 <b>المسؤول:</b> ${shift.closed_by || shift.opened_by}`,
-    shift.opened_at ? `⏰ <b>وقت الفتح:</b> ${new Date(shift.opened_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : '',
-    shift.closed_at ? `⏰ <b>وقت الإغلاق:</b> ${new Date(shift.closed_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : '',
+    shift.opened_at ? `⏰ <b>وقت الفتح:</b> ${new Date(shift.opened_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })}` : '',
+    shift.closed_at ? `⏰ <b>وقت الإغلاق:</b> ${new Date(shift.closed_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })}` : '',
     `━━━━━━━━━━━━━━━━━━━━`,
     `💵 <b>المبيعات وتفصيل الدفع:</b>`,
-    `• إجمالي المبيعات: <b>${Number(fin.total_sales).toLocaleString()} ج.م</b> (${ord.completed_orders_count} طلب)`,
+    `• إجمالي المبيعات الكلي: <b>${Number(fin.total_sales).toLocaleString()} ج.م</b> (${ord.completed_orders_count} طلب)`,
+    ord.product_sales !== undefined ? `  └ مبيعات الأصناف (Food): <b>${Number(ord.product_sales).toLocaleString()} ج.م</b>` : '',
+    ord.delivery_fees_total !== undefined && ord.delivery_fees_total > 0 ? `  └ إجمالي خدمات التوصيل: <b>${Number(ord.delivery_fees_total).toLocaleString()} ج.م</b>` : '',
     `• كاش مورد بالخزينة: <b>${Number(fin.cash_sales).toLocaleString()} ج.م</b>`,
     `• تحويلات إنستاباي: <b>${Number(fin.instapay_sales).toLocaleString()} ج.م</b>`,
     `• محافظ إلكترونية: <b>${Number(fin.wallet_sales).toLocaleString()} ج.م</b>`,
@@ -151,8 +153,8 @@ export async function notifyShiftOpened(data: {
   openedBy: string
   initialCash: number
 }) {
-  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
-  const date = new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'numeric', day: 'numeric' })
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })
+  const date = new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'numeric', day: 'numeric', timeZone: 'Africa/Cairo' })
   
   const msg = [
     `🟢 <b>فتح وردية جديدة للمطعم (#${data.shiftNumber})</b>`,
@@ -200,8 +202,8 @@ export interface ExecutiveDailyReportData {
 }
 
 export async function sendExecutiveDailyReport(data: ExecutiveDailyReportData): Promise<TelegramSendResult> {
-  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
-  const date = data.dateStr || new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })
+  const date = data.dateStr || new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Africa/Cairo' })
   const disc = Number(data.discrepancy || 0)
   const discText = disc === 0
     ? '✅ الدرج مطابق تماماً (0 ج.م)'
@@ -296,7 +298,7 @@ export async function notifyExpenseRecorded(data: {
   recipientName?: string
   recordedBy: string
 }) {
-  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })
   const msg = [
     `💸 <b>تسجيل نقدية خارجة / مصروف</b>`,
     `━━━━━━━━━━━━━━━━━━━`,
@@ -318,7 +320,7 @@ export async function notifyOrderCancelled(data: {
   cancelledBy: string
   reason: string
 }) {
-  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })
   const msg = [
     `🚨 <b>إلغاء طلب (#${data.orderNumber})</b>`,
     `━━━━━━━━━━━━━━━━━━━`,
@@ -339,7 +341,7 @@ export async function notifyNewOrder(data: {
   orderType: string
   totalAmount: number
 }) {
-  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })
   const typeLabel = data.orderType === 'delivery' ? '🛵 دليفري منزل' : '🏪 استلام من الفرع'
   const msg = [
     `🔥 <b>طلب جديد ورد (#${data.orderNumber})</b>`,

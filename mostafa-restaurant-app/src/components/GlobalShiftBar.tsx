@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 
@@ -40,13 +40,18 @@ export default function GlobalShiftBar({ onShiftStateChange }: GlobalShiftBarPro
   const [shiftData, setShiftData] = useState<ActiveShiftFinancials | null>(null)
   const [currentStaff, setCurrentStaff] = useState<CurrentStaffInfo | null>(null)
   const [elapsedMinutes, setElapsedMinutes] = useState<number>(0)
+  
+  const openedAtRef = useRef<string | null>(null)
+  const syncDebounceRef = useRef<NodeJS.Timeout | null>(null)
 
-  const fetchShiftState = async () => {
+  const fetchShiftState = useCallback(async (isBackground = false) => {
+    if (!isBackground) setLoading(true)
     try {
       const res = await fetch('/api/admin/daily-shift')
       if (!res.ok) {
         setHasActiveShift(false)
         setShiftData(null)
+        openedAtRef.current = null
         if (onShiftStateChange) onShiftStateChange(false)
         return
       }
@@ -59,6 +64,7 @@ export default function GlobalShiftBar({ onShiftStateChange }: GlobalShiftBarPro
       if (data.hasActiveShift && data.activeShift) {
         setHasActiveShift(true)
         setShiftData(data.activeShift)
+        openedAtRef.current = data.activeShift.opened_at || null
         if (onShiftStateChange) onShiftStateChange(true)
 
         if (data.activeShift.opened_at) {
@@ -69,23 +75,34 @@ export default function GlobalShiftBar({ onShiftStateChange }: GlobalShiftBarPro
       } else {
         setHasActiveShift(false)
         setShiftData(null)
+        openedAtRef.current = null
         if (onShiftStateChange) onShiftStateChange(false)
       }
     } catch {
       setHasActiveShift(false)
       setShiftData(null)
+      openedAtRef.current = null
       if (onShiftStateChange) onShiftStateChange(false)
     } finally {
       setLoading(false)
     }
-  }
+  }, [onShiftStateChange])
+
+  const scheduleBackgroundSync = useCallback(() => {
+    if (syncDebounceRef.current) {
+      clearTimeout(syncDebounceRef.current)
+    }
+    syncDebounceRef.current = setTimeout(() => {
+      fetchShiftState(true)
+    }, 300)
+  }, [fetchShiftState])
 
   useEffect(() => {
-    fetchShiftState()
+    fetchShiftState(false)
 
     const timer = setInterval(() => {
-      if (shiftData?.opened_at) {
-        const openedTime = new Date(shiftData.opened_at).getTime()
+      if (openedAtRef.current) {
+        const openedTime = new Date(openedAtRef.current).getTime()
         const now = Date.now()
         setElapsedMinutes(Math.max(0, Math.floor((now - openedTime) / 60000)))
       }
@@ -94,24 +111,25 @@ export default function GlobalShiftBar({ onShiftStateChange }: GlobalShiftBarPro
     const channel = supabase
       .channel('global-shift-context')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
-        fetchShiftState()
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        fetchShiftState()
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_expenses' }, () => {
-        fetchShiftState()
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_trips' }, () => {
-        fetchShiftState()
+        scheduleBackgroundSync()
       })
       .subscribe()
 
     return () => {
       clearInterval(timer)
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current)
       supabase.removeChannel(channel)
     }
-  }, [shiftData?.opened_at])
+  }, [fetchShiftState, scheduleBackgroundSync])
 
   const formatDuration = (mins: number) => {
     if (mins < 60) return `${mins} دقيقة`
