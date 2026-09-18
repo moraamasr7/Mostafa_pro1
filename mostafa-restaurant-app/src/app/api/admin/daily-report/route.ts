@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
-import { sendExecutiveDailyReport } from '@/lib/telegram'
-import { calculateFleetDriversAccounting } from '@/lib/driverAccounting'
+import { sendTelegramFinalDailyReport } from '@/lib/telegram'
+import { calculateDailyShiftAccounting } from '@/lib/dailyShiftAccounting'
+import { buildFinalDailyReport } from '@/lib/dailyReportPresentation'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,9 +12,9 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const shiftId = searchParams.get('shift_id')
 
-    let query = serverSupabase.from('daily_shifts').select('*').order('opened_at', { ascending: false }).limit(1)
+    let query = serverSupabase.from('daily_shifts').select('id').order('opened_at', { ascending: false }).limit(1)
     if (shiftId) {
-      query = serverSupabase.from('daily_shifts').select('*').eq('id', shiftId).limit(1)
+      query = serverSupabase.from('daily_shifts').select('id').eq('id', shiftId).limit(1)
     }
 
     const { data: shifts, error: shiftErr } = await query
@@ -23,104 +24,59 @@ export async function GET(req: NextRequest) {
     }
 
     const activeShift = shifts[0]
-    const startTime = activeShift.opened_at
-    const endTime = activeShift.closed_at || new Date().toISOString()
+    const finalReport = await buildFinalDailyReport(serverSupabase, activeShift.id)
 
-    const [ordersRes, expensesRes, tripsRes, driversRes] = await Promise.all([
-      serverSupabase
-        .from('orders')
-        .select('total_amount, status, order_type, payment_method, created_at')
-        .gte('created_at', startTime)
-        .lte('created_at', endTime),
-      serverSupabase
-        .from('shift_expenses')
-        .select('amount, category')
-        .eq('shift_id', activeShift.id),
-      serverSupabase
-        .from('delivery_trips')
-        .select('id, status')
-        .gte('created_at', startTime),
-      serverSupabase
-        .from('driver_shifts')
-        .select('driver_id')
-        .gte('started_at', startTime),
-    ])
-
-    const orders: any[] = ordersRes.data || []
-    const expenses: any[] = expensesRes.data || []
-    const trips: any[] = tripsRes.data || []
-    const driverShifts: any[] = driversRes.data || []
-
-    const completedOrders = orders.filter((o: any) => ['completed', 'delivered'].includes(o.status))
-    const totalSales = completedOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-    const cashSales = completedOrders.reduce((acc: number, o: any) => ((o.payment_method || 'cash') === 'cash' ? acc + Number(o.total_amount || 0) : acc), 0)
-    const nonCashSales = totalSales - cashSales
-
-    const deliveryOrders = completedOrders.filter((o: any) => o.order_type === 'delivery')
-    const deliverySales = deliveryOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-
-    const takeawayOrders = completedOrders.filter((o: any) => o.order_type === 'takeaway' || o.order_type === 'dine_in')
-    const takeawaySales = takeawayOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-
-    const cancelledOrders = orders.filter((o: any) => o.status === 'cancelled')
-    const cancelledAmount = cancelledOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-    const failedOrders = orders.filter((o: any) => o.status === 'failed')
-
-    const uniqueDrivers = new Set(driverShifts.map((ds: any) => ds.driver_id))
-    const totalExpenses = expenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0)
-    const initialCash = Number(activeShift.initial_cash || 0)
-    const expectedCash = initialCash + cashSales - totalExpenses
-    const actualCash = activeShift.status === 'closed' ? Number(activeShift.final_cash || 0) : null
-    const discrepancy = actualCash !== null ? actualCash - expectedCash : null
-
-    // 🛵 Single Source of Truth for Driver Fleet Accounting
-    const fleetAccounting = await calculateFleetDriversAccounting(
-      serverSupabase,
-      activeShift.id,
-      activeShift.opened_at,
-      activeShift.closed_at
-    )
-
+    // Backwards compatible flattened structure for existing callers + full structured payload
     const reportData = {
-      shiftNumber: activeShift.shift_number,
-      shiftStatus: activeShift.status,
-      openedBy: activeShift.opened_by,
-      openedAt: activeShift.opened_at,
-      closedBy: activeShift.closed_by || null,
-      closedAt: activeShift.closed_at || null,
-      totalSales,
-      cashSales,
-      nonCashSales,
-      totalOrdersCount: completedOrders.length,
-      averageOrderValue: completedOrders.length > 0 ? Math.round(totalSales / completedOrders.length) : 0,
-      deliverySales,
-      deliveryOrdersCount: deliveryOrders.length,
-      takeawaySales,
-      takeawayOrdersCount: takeawayOrders.length,
-      initialCash,
-      totalExpenses,
-      expectedCash,
-      actualCash,
-      discrepancy,
-      activeDriversCount: uniqueDrivers.size,
-      deliveryTripsCount: trips.length,
+      shiftId: finalReport.shift.id,
+      shiftNumber: finalReport.shift.shift_number,
+      shiftStatus: finalReport.shift.status,
+      openedBy: finalReport.shift.opened_by,
+      openedAt: finalReport.shift.opened_at,
+      closedBy: finalReport.shift.closed_by,
+      closedAt: finalReport.shift.closed_at,
+      totalSales: finalReport.financial_summary.total_sales,
+      cashSales: finalReport.financial_summary.cash_sales,
+      instapaySales: finalReport.financial_summary.instapay_sales,
+      walletSales: finalReport.financial_summary.wallet_sales,
+      otherElectronicSales: finalReport.financial_summary.other_electronic_sales,
+      nonCashSales: finalReport.financial_summary.non_cash_sales,
+      driverCustodyCash: finalReport.cash_custody.driver_custody_cash,
+      uncollectedCash: finalReport.cash_custody.uncollected_cash,
+      totalOrdersCount: finalReport.orders_summary.completed_orders_count,
+      averageOrderValue: finalReport.orders_summary.average_order_value,
+      deliverySales: finalReport.orders_summary.delivery_sales,
+      deliveryOrdersCount: finalReport.orders_summary.delivery_orders_count,
+      takeawaySales: finalReport.orders_summary.takeaway_sales,
+      takeawayOrdersCount: finalReport.orders_summary.takeaway_orders_count,
+      initialCash: finalReport.cash_reconciliation.initial_cash,
+      totalExpenses: finalReport.expenses_summary.total_expenses,
+      generalExpenses: finalReport.expenses_summary.general_expenses,
+      driverAdvances: finalReport.expenses_summary.driver_advances,
+      staffAdvances: finalReport.expenses_summary.staff_advances,
+      expectedCash: finalReport.cash_reconciliation.expected_cash_in_drawer,
+      actualCash: finalReport.cash_reconciliation.actual_cash_in_drawer,
+      discrepancy: finalReport.cash_reconciliation.discrepancy,
+      activeDriversCount: finalReport.fleet_summary.active_drivers_count,
+      deliveryTripsCount: finalReport.fleet_summary.delivery_trips_count,
       fleetAccounting: {
-        hourlyRate: fleetAccounting.hourly_rate,
-        driversCount: fleetAccounting.drivers_count,
-        totalHours: fleetAccounting.total_hours,
-        totalHoursWage: fleetAccounting.total_hours_wage,
-        totalDeliveredOrders: fleetAccounting.total_delivered_orders,
-        totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
-        totalDriverAdvances: fleetAccounting.total_driver_advances,
-        totalNetPayout: fleetAccounting.total_net_payout,
+        hourlyRate: finalReport.fleet_summary.hourly_rate,
+        driversCount: finalReport.fleet_summary.active_drivers_count,
+        totalHours: finalReport.fleet_summary.total_hours,
+        totalHoursWage: finalReport.fleet_summary.total_hours_wage,
+        totalDeliveredOrders: finalReport.fleet_summary.total_delivered_orders,
+        totalDeliveryCommissions: finalReport.fleet_summary.total_delivery_commissions,
+        totalDriverAdvances: finalReport.fleet_summary.total_driver_advances,
+        totalNetPayout: finalReport.fleet_summary.total_net_payout,
       },
-      cancelledOrdersCount: cancelledOrders.length,
-      cancelledAmount,
-      failedOrdersCount: failedOrders.length,
-      notes: activeShift.notes || null,
+      cancelledOrdersCount: finalReport.orders_summary.cancelled_orders_count,
+      cancelledAmount: finalReport.orders_summary.cancelled_amount,
+      failedOrdersCount: finalReport.orders_summary.failed_orders_count,
+      notes: finalReport.shift.notes,
+      final_daily_report: finalReport,
     }
 
-    return NextResponse.json({ success: true, report: reportData })
+    return NextResponse.json({ success: true, report: reportData, final_daily_report: finalReport })
   } catch (err: any) {
     console.error('Error generating daily report:', err)
     return NextResponse.json({ error: 'تعذر استخراج التقرير اليومي' }, { status: 500 })
@@ -133,104 +89,43 @@ export async function POST(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const shiftId = searchParams.get('shift_id')
 
-    let query = serverSupabase.from('daily_shifts').select('*').order('opened_at', { ascending: false }).limit(1)
+    let query = serverSupabase.from('daily_shifts').select('id').order('opened_at', { ascending: false }).limit(1)
     if (shiftId) {
-      query = serverSupabase.from('daily_shifts').select('*').eq('id', shiftId).limit(1)
+      query = serverSupabase.from('daily_shifts').select('id').eq('id', shiftId).limit(1)
     }
 
-    const { data: shifts } = await query
+    const { data: shifts, error: shiftErr } = await query
     const shift = shifts?.[0]
 
-    if (!shift) {
+    if (shiftErr || !shift) {
       return NextResponse.json({ error: 'لم يتم العثور على وردية' }, { status: 404 })
     }
 
-    const startTime = shift.opened_at
-    const endTime = shift.closed_at || new Date().toISOString()
+    // 📊 Canonical Presentation Layer Output
+    const finalReport = await buildFinalDailyReport(serverSupabase, shift.id)
 
-    const [ordersRes, expensesRes, tripsRes, driversRes] = await Promise.all([
-      serverSupabase
-        .from('orders')
-        .select('total_amount, status, order_type, payment_method')
-        .gte('created_at', startTime)
-        .lte('created_at', endTime),
-      serverSupabase.from('shift_expenses').select('amount').eq('shift_id', shift.id),
-      serverSupabase.from('delivery_trips').select('id, status').gte('created_at', startTime),
-      serverSupabase.from('driver_shifts').select('driver_id').gte('started_at', startTime),
-    ])
-
-    const orders: any[] = ordersRes.data || []
-    const expenses: any[] = expensesRes.data || []
-    const trips: any[] = tripsRes.data || []
-    const driverShifts: any[] = driversRes.data || []
-
-    const completedOrders = orders.filter((o: any) => ['completed', 'delivered'].includes(o.status))
-    const totalSales = completedOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-    const cashSales = completedOrders.reduce((acc: number, o: any) => ((o.payment_method || 'cash') === 'cash' ? acc + Number(o.total_amount || 0) : acc), 0)
-    const nonCashSales = totalSales - cashSales
-
-    const deliveryOrders = completedOrders.filter((o: any) => o.order_type === 'delivery')
-    const deliverySales = deliveryOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-
-    const takeawayOrders = completedOrders.filter((o: any) => o.order_type === 'takeaway' || o.order_type === 'dine_in')
-    const takeawaySales = takeawayOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-
-    const cancelledOrders = orders.filter((o: any) => o.status === 'cancelled')
-    const cancelledAmount = cancelledOrders.reduce((acc: number, o: any) => acc + Number(o.total_amount || 0), 0)
-    const failedOrders = orders.filter((o: any) => o.status === 'failed')
-
-    const uniqueDrivers = new Set(driverShifts.map((ds: any) => ds.driver_id))
-    const totalExpenses = expenses.reduce((acc: number, e: any) => acc + Number(e.amount || 0), 0)
-    const initialCash = Number(shift.initial_cash || 0)
-    const expectedCash = initialCash + cashSales - totalExpenses
-    const actualCash = Number(shift.final_cash ?? expectedCash)
-    const discrepancy = actualCash - expectedCash
-
-    // 🛵 Single Source of Truth for Driver Fleet Accounting
-    const fleetAccounting = await calculateFleetDriversAccounting(
-      serverSupabase,
-      shift.id,
-      shift.opened_at,
-      shift.closed_at
-    )
-
-    const result = await sendExecutiveDailyReport({
-      shiftNumber: shift.shift_number,
-      closedBy: shift.closed_by || shift.opened_by || 'الإدارة',
-      totalSales,
-      totalOrdersCount: completedOrders.length,
-      deliverySales,
-      deliveryOrdersCount: deliveryOrders.length,
-      takeawaySales,
-      takeawayOrdersCount: takeawayOrders.length,
-      initialCash,
-      totalExpenses,
-      expectedCash,
-      actualCash,
-      discrepancy,
-      deliveryTripsCount: trips.length,
-      activeDriversCount: uniqueDrivers.size,
-      fleetAccounting: {
-        totalHours: fleetAccounting.total_hours,
-        totalHoursWage: fleetAccounting.total_hours_wage,
-        totalDeliveredOrders: fleetAccounting.total_delivered_orders,
-        totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
-        totalDriverAdvances: fleetAccounting.total_driver_advances,
-        totalNetPayout: fleetAccounting.total_net_payout,
-      },
-      cancelledOrdersCount: cancelledOrders.length,
-      cancelledAmount,
-      failedOrdersCount: failedOrders.length,
-      notes: shift.notes || (shift.status === 'open' ? '⚠️ تقرير فوري خلال الوردية (الوردية ما زالت مفتوحة)' : undefined),
-    })
+    // 📤 Dispatch to Telegram Output Sink (Failure Isolated)
+    const result = await sendTelegramFinalDailyReport(finalReport)
 
     if (!result.success) {
-      return NextResponse.json({ error: result.error || 'فشل إرسال التقرير لتليجرام' }, { status: 500 })
+      return NextResponse.json({
+        success: true,
+        telegram_sent: false,
+        warning: result.error || 'تعذر إرسال التقرير لتليجرام',
+        final_daily_report: finalReport,
+      }, { status: 200 })
     }
 
-    return NextResponse.json({ success: true, message: 'تم إرسال التقرير التنفيذي لتليجرام بنجاح' })
+    return NextResponse.json({
+      success: true,
+      telegram_sent: true,
+      message: 'تم إرسال التقرير التنفيذي لتليجرام بنجاح',
+      final_daily_report: finalReport,
+    }, { status: 200 })
   } catch (err: any) {
     console.error('Error sending on-demand daily report:', err)
     return NextResponse.json({ error: 'حدث خطأ غير متوقع' }, { status: 500 })
   }
 }
+
+

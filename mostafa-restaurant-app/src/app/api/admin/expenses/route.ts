@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
@@ -52,7 +52,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { category, amount, description, recipient_name, recorded_by } = body
+    const { category, amount, description, recipient_name, recorded_by, driver_id, staff_id } = body
 
     if (!category || !description || typeof description !== 'string') {
       return NextResponse.json({ error: 'البند وتفاصيل الصرف مطلوبان' }, { status: 400 })
@@ -80,6 +80,29 @@ export async function POST(request: NextRequest) {
     }
 
     const cleanRecordedBy = (recorded_by && String(recorded_by).trim()) || 'كاشير الوردية'
+    let finalRecipientName = recipient_name?.trim() || null
+    const validDriverId = (driver_id && String(driver_id).trim()) || null
+    const validStaffId = (staff_id && String(staff_id).trim()) || null
+
+    if (validDriverId && !finalRecipientName) {
+      const { data: driverRow } = await serverSupabase
+        .from('drivers')
+        .select('name')
+        .eq('id', validDriverId)
+        .maybeSingle()
+      if (driverRow?.name) {
+        finalRecipientName = driverRow.name
+      }
+    } else if (validStaffId && !finalRecipientName) {
+      const { data: staffRow } = await serverSupabase
+        .from('staff_profiles')
+        .select('full_name')
+        .eq('id', validStaffId)
+        .maybeSingle()
+      if (staffRow?.full_name) {
+        finalRecipientName = staffRow.full_name
+      }
+    }
 
     const { data: newExp, error: insErr } = await serverSupabase
       .from('shift_expenses')
@@ -88,7 +111,9 @@ export async function POST(request: NextRequest) {
         category: category.trim(),
         amount: numAmount,
         description: description.trim(),
-        recipient_name: recipient_name?.trim() || null,
+        recipient_name: finalRecipientName,
+        driver_id: validDriverId,
+        staff_id: validStaffId,
         recorded_by: cleanRecordedBy,
       })
       .select('*')

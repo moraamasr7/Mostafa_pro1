@@ -77,7 +77,7 @@ export async function calculateFleetDriversAccounting(
   // 3. Fetch advances for this daily shift
   const { data: expensesData } = await supabase
     .from('shift_expenses')
-    .select('id, amount, description, recipient_name, created_at')
+    .select('id, amount, description, recipient_name, driver_id, created_at')
     .eq('shift_id', dailyShiftId)
     .eq('category', 'سلف طيارين')
 
@@ -86,6 +86,7 @@ export async function calculateFleetDriversAccounting(
     amount: Number(e.amount || 0),
     description: e.description || '',
     recipient_name: e.recipient_name,
+    driver_id: e.driver_id || null,
     created_at: e.created_at,
   }))
 
@@ -131,9 +132,14 @@ export async function calculateFleetDriversAccounting(
 
     const driverNameLower = d.name.trim().toLowerCase()
     const matchedAdvances = advancesList.filter((adv) => {
+      // 1. Primary Source of Truth: exact driver_id match
+      if (adv.driver_id) {
+        return adv.driver_id === d.id
+      }
+      // 2. Strict Fallback for historical records with driver_id IS NULL
       if (!adv.recipient_name) return false
       const recLower = adv.recipient_name.trim().toLowerCase()
-      return recLower === driverNameLower || recLower.includes(driverNameLower) || driverNameLower.includes(recLower)
+      return recLower === driverNameLower
     })
     const advancesTotal = matchedAdvances.reduce((acc, curr) => acc + curr.amount, 0)
 

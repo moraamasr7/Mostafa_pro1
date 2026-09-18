@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '../login/route'
-import { notifyShiftOpened, notifyShiftClosed } from '@/lib/telegram'
+import { notifyShiftOpened, sendTelegramFinalDailyReport } from '@/lib/telegram'
 import { calculateFleetDriversAccounting } from '@/lib/driverAccounting'
+import { calculateDailyShiftAccounting } from '@/lib/dailyShiftAccounting'
+import { buildFinalDailyReport } from '@/lib/dailyReportPresentation'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,71 +52,37 @@ export async function GET(request: NextRequest) {
       }, { status: 200 })
     }
 
-    // 2. Calculate shift financials
-    const shiftStartTime = activeShift.opened_at
-
-    const { data: orders } = await serverSupabase
-      .from('orders')
-      .select('id, total_amount, order_type, status, payment_method')
-      .gte('created_at', shiftStartTime)
-
-    let totalSales = 0
-    let cashSales = 0
-    let nonCashSales = 0
-    let takeawaySales = 0
-    let deliverySales = 0
-
-    ;(orders || []).forEach(o => {
-      if (['completed', 'delivered'].includes(o.status)) {
-        const amount = Number(o.total_amount || 0)
-        totalSales += amount
-        const isCash = (o.payment_method || 'cash') === 'cash'
-        if (isCash) {
-          cashSales += amount
-        } else {
-          nonCashSales += amount
-        }
-        if (o.order_type === 'takeaway') takeawaySales += amount
-        if (o.order_type === 'delivery') deliverySales += amount
-      }
-    })
-
-    const { data: expenses } = await serverSupabase
-      .from('shift_expenses')
-      .select('amount')
-      .eq('shift_id', activeShift.id)
-
-    const totalExpenses = (expenses || []).reduce((acc, exp) => acc + Number(exp.amount || 0), 0)
-    const initialCash = Number(activeShift.initial_cash || 0)
-    const systemExpectedCash = initialCash + cashSales - totalExpenses
-
-    // 🛵 Single Source of Truth for Driver Fleet Accounting
-    const fleetAccounting = await calculateFleetDriversAccounting(
-      serverSupabase,
-      activeShift.id,
-      activeShift.opened_at
-    ).catch(() => null)
+    // 2. Calculate shift financials using Canonical Daily Shift Accounting
+    const accounting = await calculateDailyShiftAccounting(serverSupabase, activeShift.id)
 
     return NextResponse.json({
       hasActiveShift: true,
       activeShift: {
         ...activeShift,
-        totalSales,
-        cashSales,
-        nonCashSales,
-        takeawaySales,
-        deliverySales,
-        totalExpenses,
-        systemExpectedCash,
-        fleetAccounting: fleetAccounting ? {
-          hourlyRate: fleetAccounting.hourly_rate,
-          driversCount: fleetAccounting.drivers_count,
-          totalHours: fleetAccounting.total_hours,
-          totalHoursWage: fleetAccounting.total_hours_wage,
-          totalDeliveredOrders: fleetAccounting.total_delivered_orders,
-          totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
-          totalDriverAdvances: fleetAccounting.total_driver_advances,
-          totalNetPayout: fleetAccounting.total_net_payout,
+        totalSales: accounting.total_sales,
+        cashSales: accounting.cash_sales,
+        driverCustodyCash: accounting.driver_custody_cash,
+        uncollectedCash: accounting.uncollected_cash,
+        instapaySales: accounting.instapay_sales,
+        walletSales: accounting.wallet_sales,
+        otherElectronicSales: accounting.other_electronic_sales,
+        nonCashSales: accounting.instapay_sales + accounting.wallet_sales + accounting.other_electronic_sales,
+        takeawaySales: accounting.takeaway_sales,
+        deliverySales: accounting.delivery_sales,
+        totalExpenses: accounting.total_expenses,
+        generalExpenses: accounting.general_expenses,
+        driverAdvances: accounting.driver_advances,
+        staffAdvances: accounting.staff_advances,
+        systemExpectedCash: accounting.system_expected_cash,
+        fleetAccounting: accounting.fleet_accounting ? {
+          hourlyRate: accounting.fleet_accounting.hourly_rate,
+          driversCount: accounting.fleet_accounting.drivers_count,
+          totalHours: accounting.fleet_accounting.total_hours,
+          totalHoursWage: accounting.fleet_accounting.total_hours_wage,
+          totalDeliveredOrders: accounting.fleet_accounting.total_delivered_orders,
+          totalDeliveryCommissions: accounting.fleet_accounting.total_delivery_commissions,
+          totalDriverAdvances: accounting.fleet_accounting.total_driver_advances,
+          totalNetPayout: accounting.fleet_accounting.total_net_payout,
         } : null,
       },
     }, { status: 200 })
@@ -208,39 +176,31 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'الوردية غير موجودة أو تم إغلاقها بالفعل' }, { status: 400 })
       }
 
-      const [ordersRes, expensesRes, tripsRes, driversRes, openDriverShiftsRes] = await Promise.all([
+      // 📊 Single Source of Truth: Canonical Daily Shift Accounting
+      const accounting = await calculateDailyShiftAccounting(serverSupabase, shift.id)
+
+      const [activeOrdersRes, openTripsRes, openDriverShiftsRes] = await Promise.all([
         serverSupabase
           .from('orders')
-          .select('id, order_number, total_amount, status, order_type, payment_method')
-          .gte('created_at', shift.opened_at),
-        serverSupabase
-          .from('shift_expenses')
-          .select('amount')
-          .eq('shift_id', shift.id),
+          .select('id, order_number, status')
+          .eq('daily_shift_id', shift.id)
+          .in('status', ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery']),
         serverSupabase
           .from('delivery_trips')
           .select('id, trip_number, status')
-          .gte('created_at', shift.opened_at),
-        serverSupabase
-          .from('driver_shifts')
-          .select('driver_id')
-          .gte('started_at', shift.opened_at),
+          .gte('created_at', shift.opened_at)
+          .not('status', 'in', '("completed","cancelled")'),
         serverSupabase
           .from('driver_shifts')
           .select('id, driver_id, drivers(name)')
           .eq('status', 'open'),
       ])
 
-      const orders = ordersRes.data || []
-      const expenses = expensesRes.data || []
-      const trips = tripsRes.data || []
-      const driverShifts = driversRes.data || []
+      const activeUnresolvedOrders = activeOrdersRes.data || []
+      const openTrips = openTripsRes.data || []
       const openDriverShifts = openDriverShiftsRes.data || []
 
       // 🔒 التحقق التشغيلي الأول: التأكد من حسم جميع طلبات الوردية (لا توجد طلبات معلقة قيد التحضير أو في الطريق)
-      const activeUnresolvedOrders = orders.filter(o =>
-        ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
-      )
       if (activeUnresolvedOrders.length > 0) {
         return NextResponse.json({
           error: `أمان العمليات: لا يمكن تقفيل الوردية لوجود (${activeUnresolvedOrders.length}) طلبات نشطة لم تُحسم بعد (أرقام: ${activeUnresolvedOrders.slice(0, 5).map(o => '#' + o.order_number).join(', ')}${activeUnresolvedOrders.length > 5 ? '...' : ''}). يجب تسليمها أو إلغاؤها أولاً.`
@@ -248,7 +208,6 @@ export async function POST(request: NextRequest) {
       }
 
       // 🔒 التحقق التشغيلي الثاني: التأكد من إغلاق كافة رحلات التوصيل
-      const openTrips = trips.filter(t => !['completed', 'cancelled'].includes(t.status))
       if (openTrips.length > 0) {
         return NextResponse.json({
           error: `أمان العمليات: يوجد (${openTrips.length}) رحلات دليفري نشطة لم تُغلق بعد. يجب تسوية وتوريد رحلات الطيارين أولاً.`
@@ -266,28 +225,19 @@ export async function POST(request: NextRequest) {
         }, { status: 400 })
       }
 
-      const completedOrders = orders.filter(o => ['completed', 'delivered'].includes(o.status))
-      const totalSales = completedOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
-      const cashSales = completedOrders.reduce((acc, o) => ((o.payment_method || 'cash') === 'cash' ? acc + Number(o.total_amount || 0) : acc), 0)
-      const nonCashSales = totalSales - cashSales
+      // 🔒 التحقق التشغيلي الرابع: التأكد من توريد كاش عهدة الطيارين للخزينة بالكامل
+      if (accounting.driver_custody_cash > 0) {
+        return NextResponse.json({
+          error: `أمان العمليات: توجد مبالغ نقدية في عهدة الطيارين لم تُورّد للخزينة بقيمة (${accounting.driver_custody_cash} ج.م). يجب تسوية وتوريد خطوط سير الطيارين للخزينة قبل تقفيل الوردية.`
+        }, { status: 400 })
+      }
 
-      const deliveryOrders = completedOrders.filter(o => o.order_type === 'delivery')
-      const deliverySales = deliveryOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
-
-      const takeawayOrders = completedOrders.filter(o => o.order_type === 'takeaway' || o.order_type === 'dine_in')
-      const takeawaySales = takeawayOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
-
-      const cancelledOrders = orders.filter(o => o.status === 'cancelled')
-      const cancelledAmount = cancelledOrders.reduce((acc, o) => acc + Number(o.total_amount || 0), 0)
-      const failedOrders = orders.filter(o => o.status === 'failed')
-
-      const uniqueDrivers = new Set(driverShifts.map(ds => ds.driver_id))
-
-      const totalExpenses = expenses.reduce((acc, e) => acc + Number(e.amount || 0), 0)
-      const initialCash = Number(shift.initial_cash || 0)
-      const expectedCash = initialCash + cashSales - totalExpenses
+      const initialCash = accounting.initial_cash
+      const totalSales = accounting.total_sales
+      const totalExpenses = accounting.total_expenses
+      const expectedCash = accounting.system_expected_cash
       const actualCash = Number(final_cash) || 0
-      const discrepancy = actualCash - expectedCash
+      const discrepancy = Math.round((actualCash - expectedCash) * 100) / 100
 
       const { data: closedShift, error: updateErr } = await serverSupabase
         .from('daily_shifts')
@@ -310,48 +260,24 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'الوردية غير موجودة أو تم إغلاقها بالفعل من قِبل مسؤول آخر' }, { status: 409 })
       }
 
-      // 🛵 Single Source of Truth for Driver Fleet Accounting upon shift close
-      const fleetAccounting = await calculateFleetDriversAccounting(
-        serverSupabase,
-        shift.id,
-        shift.opened_at,
-        new Date().toISOString()
-      ).catch(() => null)
-
-      notifyShiftClosed({
-        shiftNumber: shift.shift_number,
-        closedBy: closed_by.trim(),
-        initialCash,
-        totalSales,
-        totalExpenses,
-        expectedCash,
-        actualCash,
-        discrepancy,
-        totalOrdersCount: completedOrders.length,
-        deliverySales,
-        deliveryOrdersCount: deliveryOrders.length,
-        takeawaySales,
-        takeawayOrdersCount: takeawayOrders.length,
-        deliveryTripsCount: trips.length,
-        activeDriversCount: uniqueDrivers.size,
-        fleetAccounting: fleetAccounting ? {
-          totalHours: fleetAccounting.total_hours,
-          totalHoursWage: fleetAccounting.total_hours_wage,
-          totalDeliveredOrders: fleetAccounting.total_delivered_orders,
-          totalDeliveryCommissions: fleetAccounting.total_delivery_commissions,
-          totalDriverAdvances: fleetAccounting.total_driver_advances,
-          totalNetPayout: fleetAccounting.total_net_payout,
-        } : undefined,
-        cancelledOrdersCount: cancelledOrders.length,
-        cancelledAmount,
-        failedOrdersCount: failedOrders.length,
-        notes: notes?.trim() || undefined,
-      }).catch(() => {})
+      // 📤 Post-Commit Telegram Notification (Failure Isolated)
+      buildFinalDailyReport(serverSupabase, shift.id)
+        .then((finalReport) => sendTelegramFinalDailyReport(finalReport))
+        .catch((tgErr) => console.error('Non-blocking Telegram send failure on shift close:', tgErr))
 
       return NextResponse.json({
         success: true,
         message: 'تم تقفيل الوردية بنجاح وتسجيل المطابقة',
         shift: closedShift,
+        reconciliation: {
+          initial_cash: initialCash,
+          cash_sales: accounting.cash_sales,
+          total_expenses: totalExpenses,
+          system_expected_cash: expectedCash,
+          actual_cash: actualCash,
+          discrepancy: discrepancy,
+          reconciliation_status: discrepancy === 0 ? 'balanced' : discrepancy > 0 ? 'surplus' : 'deficit',
+        }
       }, { status: 200 })
     }
 

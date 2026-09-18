@@ -161,6 +161,34 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ message: result?.message || 'تم تسجيل نتيجة التوصيل بنجاح' })
     }
 
+    if (action === 'settle_to_cashier') {
+      if (!trip_id) {
+        return NextResponse.json({ error: 'معرف خط السير مطلوب للتسوية' }, { status: 400 })
+      }
+
+      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('settle_delivery_trip_to_cashier_secure', {
+        p_trip_id: trip_id,
+        p_cashier_actor: 'staff',
+        p_amount_received: collected_amount !== undefined ? collected_amount : null,
+      })
+
+      if (rpcErr) {
+        console.error('خطأ RPC في تسوية خط السير للخزينة:', rpcErr)
+        return NextResponse.json(
+          { error: rpcErr.message || 'فشل تسوية خط السير للخزينة' },
+          { status: 400 }
+        )
+      }
+
+      const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
+      return NextResponse.json({
+        message: result?.message || 'تمت تسوية خط السير وتوريد العهدة بنجاح',
+        trip_id: result?.trip_id,
+        trip_number: result?.trip_number,
+        settled_amount: result?.settled_amount,
+      })
+    }
+
     if (action === 'complete_trip') {
       if (!trip_id) {
         return NextResponse.json({ error: 'معرف خط السير مطلوب' }, { status: 400 })

@@ -1,4 +1,6 @@
-interface TelegramSendResult {
+import { FinalDailyReportPayload } from './dailyReportPresentation'
+
+export interface TelegramSendResult {
   success: boolean
   error?: string
 }
@@ -39,6 +41,114 @@ export async function sendTelegramMessage(text: string): Promise<TelegramSendRes
   }
 }
 
+/**
+ * Pure Presentation / Formatting Function for Telegram Executive Reports.
+ * 
+ * Rules:
+ * 1. Zero financial calculations (+, -, *, /, sum, reduce on financial values).
+ * 2. Directly formats numbers provided by FinalDailyReportPayload.
+ * 3. Does NOT modify or create any new financial figures.
+ */
+export function formatTelegramFinalDailyReport(report: FinalDailyReportPayload): string {
+  const shift = report.shift
+  const fin = report.financial_summary
+  const rec = report.cash_reconciliation
+  const custody = report.cash_custody
+  const exp = report.expenses_summary
+  const ord = report.orders_summary
+  const fleet = report.fleet_summary
+
+  const statusEmoji = shift.status === 'open' ? '🟢' : '🔴'
+  const statusLabel = shift.status === 'open' ? 'وردية تشغيلية مفتوحة (تقرير فوري)' : 'وردية تشغيلية مغلقة'
+
+  let discBadge = '⏳ في انتظار إغلاق الوردية وجرد الدرج'
+  if (rec.reconciliation_status === 'balanced') {
+    discBadge = '✅ الدرج مطابق تماماً (0 ج.م)'
+  } else if (rec.reconciliation_status === 'surplus') {
+    discBadge = `⚠️ زيادة بالدرج (+${Number(rec.discrepancy || 0).toLocaleString()} ج.م)`
+  } else if (rec.reconciliation_status === 'deficit') {
+    discBadge = `🚨 عجز بالدرج (${Number(rec.discrepancy || 0).toLocaleString()} ج.م)`
+  } else if (rec.reconciliation_status === 'closed_without_cash_count') {
+    discBadge = '⚠️ تم الإغلاق بدون تسجيل جرد نقدي'
+  }
+
+  const driverLines = fleet.driver_details.length > 0
+    ? fleet.driver_details.map(d =>
+        `  • <b>${d.driver_name}:</b> ${d.delivered_orders_count} طلب | ${d.duration_hours} س | صافي: <b>${Number(d.net_payout).toLocaleString()} ج.م</b>`
+      ).join('\n')
+    : ''
+
+  const lines = [
+    `📊 <b>التقرير المالي والتشغيلي التنفيذي (#${shift.shift_number})</b>`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `🔖 <b>حالة الوردية:</b> ${statusEmoji} ${statusLabel}`,
+    `👤 <b>المسؤول:</b> ${shift.closed_by || shift.opened_by}`,
+    shift.opened_at ? `⏰ <b>وقت الفتح:</b> ${new Date(shift.opened_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : '',
+    shift.closed_at ? `⏰ <b>وقت الإغلاق:</b> ${new Date(shift.closed_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}` : '',
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `💵 <b>المبيعات وتفصيل الدفع:</b>`,
+    `• إجمالي المبيعات: <b>${Number(fin.total_sales).toLocaleString()} ج.م</b> (${ord.completed_orders_count} طلب)`,
+    `• كاش مورد بالخزينة: <b>${Number(fin.cash_sales).toLocaleString()} ج.م</b>`,
+    `• تحويلات إنستاباي: <b>${Number(fin.instapay_sales).toLocaleString()} ج.م</b>`,
+    `• محافظ إلكترونية: <b>${Number(fin.wallet_sales).toLocaleString()} ج.م</b>`,
+    fin.other_electronic_sales > 0 ? `• مدفوعات إلكترونية أخرى: <b>${Number(fin.other_electronic_sales).toLocaleString()} ج.م</b>` : '',
+    `• إجمالي اللانقدي: <b>${Number(fin.non_cash_sales).toLocaleString()} ج.م</b>`,
+    ord.delivery_sales > 0 ? `• مبيعات الدليفري: <b>${Number(ord.delivery_sales).toLocaleString()} ج.م</b> (${ord.delivery_orders_count} طلب)` : '',
+    ord.takeaway_sales > 0 ? `• صالة واستلام: <b>${Number(ord.takeaway_sales).toLocaleString()} ج.م</b> (${ord.takeaway_orders_count} طلب)` : '',
+    `\n💸 <b>المصروفات والسلف:</b>`,
+    `• مصروفات تشغيلية وعامة: <b>${Number(exp.general_expenses).toLocaleString()} ج.م</b>`,
+    `• سلف الطيارين المسحوبة: <b>${Number(exp.driver_advances).toLocaleString()} ج.م</b>`,
+    `• سلف ومرتبات العاملين: <b>${Number(exp.staff_advances).toLocaleString()} ج.م</b>`,
+    `• إجمالي المصروفات: <b>${Number(exp.total_expenses).toLocaleString()} ج.م</b>`,
+    `\n💰 <b>الخزينة ومطابقة النقدية:</b>`,
+    `• العهدة الافتتاحية: <b>${Number(rec.initial_cash).toLocaleString()} ج.م</b>`,
+    `• كاش المبيعات المورد: <b>${Number(rec.cash_sales_settled).toLocaleString()} ج.م</b>`,
+    `• الكاش المطلوب توفره بالدرج: <b>${Number(rec.expected_cash_in_drawer).toLocaleString()} ج.م</b>`,
+    rec.actual_cash_in_drawer !== null ? `• الكاش الفعلي المسلم: <b>${Number(rec.actual_cash_in_drawer).toLocaleString()} ج.م</b>` : '• الكاش الفعلي: <i>قيد الجرد</i>',
+    `• نتيجة المطابقة: <b>${discBadge}</b>`,
+    `\n💼 <b>مواقع تواجد النقدية (Cash Custody):</b>`,
+    `• كاش محصل ومورد بالدرج: <b>${Number(custody.settled_to_cashier).toLocaleString()} ج.م</b>`,
+    `• كاش في عهدة الطيارين: <b>${Number(custody.driver_custody_cash).toLocaleString()} ج.م</b>`,
+    `• مبالغ معلقة غير محصلة: <b>${Number(custody.uncollected_cash).toLocaleString()} ج.م</b>`,
+    (fleet.active_drivers_count > 0 || fleet.delivery_trips_count > 0 || fleet.total_hours > 0) ? [
+      `\n🛵 <b>حركة التوصيل وأسطول الطيارين:</b>`,
+      `• الطيارين النشطين: <b>${fleet.active_drivers_count} طيارين</b> (${fleet.delivery_trips_count} رحلة)`,
+      `• ساعات عمل الأسطول: <b>${fleet.total_hours} ساعة</b> (${Number(fleet.total_hours_wage).toLocaleString()} ج.م)`,
+      `• طلبات مسلمة بالأسطول: <b>${fleet.total_delivered_orders} طلب</b> (عمولات: ${Number(fleet.total_delivery_commissions).toLocaleString()} ج.م)`,
+      fleet.total_driver_advances > 0 ? `• سلف الطيارين المخصومة: <b>-${Number(fleet.total_driver_advances).toLocaleString()} ج.م</b>` : '',
+      `• <b>صافي مستحقات الأسطول: ${Number(fleet.total_net_payout).toLocaleString()} ج.م</b>`,
+      driverLines ? `\n📋 <b>تفاصيل مستحقات الطيارين:</b>\n${driverLines}` : '',
+    ].filter(Boolean).join('\n') : '',
+    (ord.cancelled_orders_count > 0 || ord.failed_orders_count > 0) ? [
+      `\n⚠️ <b>الفواقد والإلغاءات:</b>`,
+      ord.cancelled_orders_count > 0 ? `• طلبات ملغاة: <b>${ord.cancelled_orders_count}</b> (بقيمة: ${Number(ord.cancelled_amount).toLocaleString()} ج.م)` : '',
+      ord.failed_orders_count > 0 ? `• طلبات فاشلة / مرتجعة: <b>${ord.failed_orders_count}</b>` : '',
+    ].filter(Boolean).join('\n') : '',
+    shift.notes ? `\n📝 <b>ملاحظات الإدارة:</b> ${shift.notes}` : '',
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `✨ <i>تم التقرير والاعتماد عبر لوحة العمليات السحابية.</i>`,
+  ].filter(Boolean).join('\n')
+
+  return lines
+}
+
+/**
+ * Sends the Final Daily Report to Telegram.
+ * 
+ * Guarantees Failure Isolation:
+ * Network or Telegram errors are caught safely and return { success: false, error: ... }
+ * without throwing uncaught exceptions or affecting caller workflows.
+ */
+export async function sendTelegramFinalDailyReport(report: FinalDailyReportPayload): Promise<TelegramSendResult> {
+  try {
+    const formattedHtml = formatTelegramFinalDailyReport(report)
+    return await sendTelegramMessage(formattedHtml)
+  } catch (err: any) {
+    console.error('Error formatting or sending Telegram Final Daily Report:', err)
+    return { success: false, error: err?.message || String(err) }
+  }
+}
+
 export async function notifyShiftOpened(data: {
   shiftNumber: number | string
   openedBy: string
@@ -66,11 +176,11 @@ export interface ExecutiveDailyReportData {
   closedBy: string
   dateStr?: string
   totalSales: number
-  totalOrdersCount: number
-  deliverySales: number
-  deliveryOrdersCount: number
-  takeawaySales: number
-  takeawayOrdersCount: number
+  totalOrdersCount?: number
+  deliverySales?: number
+  deliveryOrdersCount?: number
+  takeawaySales?: number
+  takeawayOrdersCount?: number
   initialCash: number
   totalExpenses: number
   expectedCash: number
@@ -102,7 +212,10 @@ export async function sendExecutiveDailyReport(data: ExecutiveDailyReportData): 
     ? `⚠️ زيادة بالدرج (+${disc.toLocaleString()} ج.م)`
     : `🚨 عجز بالدرج (${disc.toLocaleString()} ج.م)`
 
-  const avgOrder = data.totalOrdersCount > 0 ? Math.round(data.totalSales / data.totalOrdersCount) : 0
+  const ordersCount = data.totalOrdersCount || 0
+  const deliverySales = data.deliverySales || 0
+  const takeawaySales = data.takeawaySales || 0
+  const avgOrder = ordersCount > 0 ? Math.round(data.totalSales / ordersCount) : 0
 
   const lines = [
     `📊 <b>التقرير المالي والتشغيلي اليومي (#${data.shiftNumber})</b>`,
@@ -112,10 +225,10 @@ export async function sendExecutiveDailyReport(data: ExecutiveDailyReportData): 
     `👤 <b>المسؤول:</b> ${data.closedBy}`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `💵 <b>المبيعات والإيرادات:</b>`,
-    `• إجمالي المبيعات: <b>${Number(data.totalSales).toLocaleString()} ج.م</b> (${data.totalOrdersCount} طلب)`,
+    `• إجمالي المبيعات: <b>${Number(data.totalSales).toLocaleString()} ج.م</b> (${ordersCount} طلب)`,
     avgOrder > 0 ? `• متوسط الفاتورة: <b>${avgOrder.toLocaleString()} ج.م</b>` : '',
-    data.deliverySales > 0 ? `• مبيعات الدليفري: <b>${Number(data.deliverySales).toLocaleString()} ج.م</b> (${data.deliveryOrdersCount || 0} طلب)` : '',
-    data.takeawaySales > 0 ? `• صالة واستلام: <b>${Number(data.takeawaySales).toLocaleString()} ج.م</b> (${data.takeawayOrdersCount || 0} طلب)` : '',
+    deliverySales > 0 ? `• مبيعات الدليفري: <b>${Number(deliverySales).toLocaleString()} ج.م</b> (${data.deliveryOrdersCount || 0} طلب)` : '',
+    takeawaySales > 0 ? `• صالة واستلام: <b>${Number(takeawaySales).toLocaleString()} ج.م</b> (${data.takeawayOrdersCount || 0} طلب)` : '',
     `\n💸 <b>المصروفات والسلف:</b>`,
     `• إجمالي الخارج من الدرج: <b>${Number(data.totalExpenses).toLocaleString()} ج.م</b>`,
     `\n💰 <b>الخزينة ومطابقة النقدية:</b>`,
@@ -176,28 +289,7 @@ export async function notifyShiftClosed(data: {
   failedOrdersCount?: number
   notes?: string
 }) {
-  return sendExecutiveDailyReport({
-    shiftNumber: data.shiftNumber,
-    closedBy: data.closedBy,
-    totalSales: data.totalSales,
-    totalOrdersCount: data.totalOrdersCount || 0,
-    deliverySales: data.deliverySales || 0,
-    deliveryOrdersCount: data.deliveryOrdersCount || 0,
-    takeawaySales: data.takeawaySales || 0,
-    takeawayOrdersCount: data.takeawayOrdersCount || 0,
-    initialCash: data.initialCash,
-    totalExpenses: data.totalExpenses,
-    expectedCash: data.expectedCash,
-    actualCash: data.actualCash,
-    discrepancy: data.discrepancy,
-    deliveryTripsCount: data.deliveryTripsCount,
-    activeDriversCount: data.activeDriversCount,
-    fleetAccounting: data.fleetAccounting,
-    cancelledOrdersCount: data.cancelledOrdersCount,
-    cancelledAmount: data.cancelledAmount,
-    failedOrdersCount: data.failedOrdersCount,
-    notes: data.notes,
-  })
+  return sendExecutiveDailyReport(data)
 }
 
 export async function notifyExpenseRecorded(data: {

@@ -130,9 +130,8 @@ async function runOrderShiftBaselineTests() {
       .eq('id', onlineOrderId)
       .single()
 
-    // Demonstrates current gap: daily_shift_id is currently NULL for online orders!
-    const isCurrentlyNull = onOrdRow?.daily_shift_id === null
-    assert(isCurrentlyNull, 'Current Baseline Verified: Online order daily_shift_id is currently NULL (Gap to close in Step 1)')
+    const isCorrectlyAssigned = onOrdRow?.daily_shift_id === activeShiftId
+    assert(isCorrectlyAssigned, `Online order daily_shift_id is atomically set to Shift #${shiftCheck.shiftNumber} (${onOrdRow?.daily_shift_id})`)
   }
 
   // ----------------------------------------------------------------------------------
@@ -185,8 +184,9 @@ async function runOrderShiftBaselineTests() {
     .select('id, shift_number, status, opened_by, opened_at')
     .eq('status', 'open')
 
-  assert(!!allOpenShifts && allOpenShifts.length > 1, `Multiple open shifts documented in DB (${allOpenShifts?.length} open shifts)`)
-  console.log(`  ℹ️ Shifts open count: ${allOpenShifts?.length}`)
+  assert(!!allOpenShifts && allOpenShifts.length === 1, `Exactly ONE open daily shift in DB after reconciliation (Found: ${allOpenShifts?.length} open shift)`)
+  assert(allOpenShifts?.[0]?.shift_number === 9, `Open shift is canonical Shift #9 (Opened by: ${allOpenShifts?.[0]?.opened_by})`)
+  console.log(`  ℹ️ Single open shift confirmed: Shift #${allOpenShifts?.[0]?.shift_number}`)
 
   // ----------------------------------------------------------------------------------
   // 8. SUMMARY

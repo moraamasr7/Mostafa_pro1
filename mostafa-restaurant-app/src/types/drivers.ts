@@ -113,7 +113,7 @@ export interface DeliveryTrip {
   status: TripStatus
   expected_amount?: number
   collected_amount?: number
-  collection_status?: 'pending' | 'collected' | 'partially_collected' | 'not_collected'
+  collection_status?: 'uncollected' | 'pending' | 'collected' | 'partially_collected' | 'not_collected' | 'settled_to_cashier'
   dispatched_at?: string
   completed_at?: string
   created_at: string
@@ -123,3 +123,6 @@ export interface DeliveryTrip {
   }
   assignments?: OrderDriverAssignment[]
 }
+
+export type CollectionStatus = 'uncollected' | 'collected' | 'settled_to_cashier'
+
