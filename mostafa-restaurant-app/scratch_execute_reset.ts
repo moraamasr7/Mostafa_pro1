@@ -25,51 +25,50 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 })
 
-async function executeCleanReset() {
-  console.log('=====================================================')
-  console.log('🧹 EXECUTING OPERATIONAL RESET (FRESH PILOT START)')
-  console.log('=====================================================')
+async function executeCompleteWipe() {
+  console.log('--- Checking foreign key references to orders ---')
+  const { data: ords } = await supabase.from('orders').select('id')
+  console.log('Orders remaining count:', ords?.length)
 
-  // 1. Delete shift expenses
-  const { error: expErr } = await supabase.from('shift_expenses').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('1. shift_expenses cleared:', expErr ? `❌ ${expErr.message}` : '✅ Clean')
+  // Try deleting from order_status_history if exists
+  const { error: oshErr } = await supabase.from('order_status_history').delete().not('id', 'is', null)
+  console.log('order_status_history delete:', oshErr?.message || 'ok')
 
-  // 2. Delete order items
-  const { error: oiErr } = await supabase.from('order_items').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('2. order_items cleared:', oiErr ? `❌ ${oiErr.message}` : '✅ Clean')
+  // Try deleting order_items
+  const { error: oiErr } = await supabase.from('order_items').delete().not('id', 'is', null)
+  console.log('order_items delete:', oiErr?.message || 'ok')
 
-  // 3. Delete delivery outcomes
-  const { error: outErr } = await supabase.from('delivery_outcomes').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('3. delivery_outcomes cleared:', outErr ? `❌ ${outErr.message}` : '✅ Clean')
+  // Try deleting order_driver_assignments
+  const { error: odaErr } = await supabase.from('order_driver_assignments').delete().not('id', 'is', null)
+  console.log('order_driver_assignments delete:', odaErr?.message || 'ok')
 
-  // 4. Delete order driver assignments
-  const { error: odaErr } = await supabase.from('order_driver_assignments').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('4. order_driver_assignments cleared:', odaErr ? `❌ ${odaErr.message}` : '✅ Clean')
+  // Try deleting delivery_outcomes
+  const { error: outErr } = await supabase.from('delivery_outcomes').delete().not('id', 'is', null)
+  console.log('delivery_outcomes delete:', outErr?.message || 'ok')
 
-  // 5. Delete delivery trips
-  const { error: dtErr } = await supabase.from('delivery_trips').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('5. delivery_trips cleared:', dtErr ? `❌ ${dtErr.message}` : '✅ Clean')
+  // Delete orders
+  const { error: ordErr } = await supabase.from('orders').delete().not('id', 'is', null)
+  console.log('orders delete:', ordErr?.message || 'ok')
 
-  // 6. Delete orders
-  const { error: ordErr } = await supabase.from('orders').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('6. orders cleared:', ordErr ? `❌ ${ordErr.message}` : '✅ Clean')
+  // Delete delivery_trips
+  const { error: dtErr } = await supabase.from('delivery_trips').delete().not('id', 'is', null)
+  console.log('delivery_trips delete:', dtErr?.message || 'ok')
 
-  // 7. Delete driver shifts
-  const { error: dsErr } = await supabase.from('driver_shifts').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('7. driver_shifts cleared:', dsErr ? `❌ ${dsErr.message}` : '✅ Clean')
+  // Delete shift_expenses
+  const { error: expErr } = await supabase.from('shift_expenses').delete().not('id', 'is', null)
+  console.log('shift_expenses delete:', expErr?.message || 'ok')
 
-  // 8. Delete daily shifts
-  const { error: dailyErr } = await supabase.from('daily_shifts').delete().neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('8. daily_shifts cleared:', dailyErr ? `❌ ${dailyErr.message}` : '✅ Clean')
+  // Delete driver_shifts
+  const { error: dsErr } = await supabase.from('driver_shifts').delete().not('id', 'is', null)
+  console.log('driver_shifts delete:', dsErr?.message || 'ok')
 
-  // 9. Reset drivers status to offline
-  const { error: drvErr } = await supabase.from('drivers').update({ status: 'offline' }).neq('id', '00000000-0000-0000-0000-000000000000')
-  console.log('9. drivers status reset to offline:', drvErr ? `❌ ${drvErr.message}` : '✅ Clean')
+  // Delete daily_shifts
+  const { error: dailyErr } = await supabase.from('daily_shifts').delete().not('id', 'is', null)
+  console.log('daily_shifts delete:', dailyErr?.message || 'ok')
 
-  console.log('=====================================================')
-  console.log('✨ ALL OPERATIONAL DATA HAS BEEN SAFELY RESET!')
-  console.log('✨ Master Data (Menu, Staff, Policies, Drivers) is 100% Intact.')
-  console.log('=====================================================')
+  // Reset driver status to offline
+  const { error: drvErr } = await supabase.from('drivers').update({ status: 'offline' }).not('id', 'is', null)
+  console.log('drivers reset to offline:', drvErr?.message || 'ok')
 }
 
-executeCleanReset()
+executeCompleteWipe()
