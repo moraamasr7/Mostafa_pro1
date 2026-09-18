@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Cairo } from "next/font/google";
 import "./globals.css";
+import { ThemeProvider } from "@/components/ThemeProvider";
 
 const cairoFont = Cairo({
   variable: "--font-cairo",
@@ -23,10 +24,12 @@ export default function RootLayout({
       lang="ar"
       dir="rtl"
       className={`${cairoFont.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="min-h-full flex flex-col font-[family-name:var(--font-cairo)]">
-        {children}
+      <body className="min-h-full flex flex-col font-[family-name:var(--font-cairo)] bg-zinc-950 text-zinc-100 dark:bg-zinc-950 dark:text-zinc-100">
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );
 }
+
