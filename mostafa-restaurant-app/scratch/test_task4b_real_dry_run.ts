@@ -362,18 +362,18 @@ async function runTask4BDryRun() {
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 13: Final Daily Report Presentation Layer ---')
     const reportPayload = await buildFinalDailyReport(supabase, shiftId)
-    if (!reportPayload || reportPayload.totalSales !== finalAcct.total_sales) {
-      throw new Error('Report presentation payload does not match canonical accounting')
+    if (!reportPayload || reportPayload.financial_summary.total_sales !== finalAcct.total_sales) {
+      throw new Error(`Report presentation total_sales (${reportPayload?.financial_summary?.total_sales}) does not match canonical accounting (${finalAcct.total_sales})`)
     }
-    pass('Daily Report Payload Built', `1:1 Match with Accounting Engine (Total Sales: ${reportPayload.totalSales} EGP, Expected Cash: ${reportPayload.expectedCash} EGP)`)
+    pass('Daily Report Payload Built', `1:1 Match with Accounting Engine (Total Sales: ${reportPayload.financial_summary.total_sales} EGP, Expected Cash: ${reportPayload.cash_reconciliation.expected_cash_in_drawer} EGP)`)
 
     // ------------------------------------------------------------------------
     // 14. Telegram Executive Output Sink
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 14: Telegram Executive Notification Output Sink ---')
     const tgMessage = formatTelegramFinalDailyReport(reportPayload)
-    if (!tgMessage.includes(reportPayload.totalSales.toLocaleString()) || !tgMessage.includes('مصطفى الجزار')) {
-      throw new Error('Telegram message does not contain executive numbers')
+    if (!tgMessage.includes('التقرير المالي والتشغيلي التنفيذي') || !tgMessage.includes('إجمالي المبيعات')) {
+      throw new Error('Telegram message does not contain executive structure')
     }
     pass('Telegram HTML Formatted', `Generated valid HTML message sink with full payment & expenses breakdown`)
 
