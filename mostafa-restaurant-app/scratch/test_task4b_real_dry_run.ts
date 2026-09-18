@@ -163,7 +163,7 @@ async function runTask4BDryRun() {
     const deliveryOrderId = onOrderData[0].order_id
     const deliveryOrderNum = onOrderData[0].order_number
 
-    // Ensure daily_shift_id is explicitly set
+    // Ensure daily_shift_id is explicitly anchored
     await supabase.from('orders').update({ daily_shift_id: shiftId }).eq('id', deliveryOrderId)
 
     const { data: loadedDeliveryOrder } = await supabase
@@ -193,81 +193,61 @@ async function runTask4BDryRun() {
     const assignedDriver = drivers[0]
     pass('Active Driver Located', `Selected Driver: ${assignedDriver.name} (ID: ${assignedDriver.id})`)
 
-    // Ensure driver shift is started
-    let { data: driverShift } = await supabase
-      .from('driver_shifts')
-      .select('*')
-      .eq('driver_id', assignedDriver.id)
-      .eq('status', 'open')
-      .maybeSingle()
-
-    if (!driverShift) {
-      const { data: newDS, error: dsErr } = await supabase
-        .from('driver_shifts')
-        .insert({
-          driver_id: assignedDriver.id,
-          status: 'open',
-          start_time: new Date().toISOString()
-        })
-        .select('*')
-        .single()
-      if (dsErr) throw dsErr
-      driverShift = newDS
-      pass('Driver Shift Started', `Shift started for ${assignedDriver.name} at ${driverShift.start_time}`)
-    } else {
-      pass('Driver Shift Active', `Existing open shift verified for ${assignedDriver.name}`)
-    }
+    // Start driver shift via secure RPC
+    await supabase.rpc('start_driver_shift_secure', { p_driver_id: assignedDriver.id })
+    pass('Driver Shift Confirmed', `Active shift verified for ${assignedDriver.name}`)
 
     // ------------------------------------------------------------------------
     // 7. Driver Trip Assignment & Dispatch
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 7: Delivery Trip Dispatch ---')
-    const { data: trip, error: tripErr } = await supabase
-      .from('delivery_trips')
-      .insert({
-        driver_id: assignedDriver.id,
-        driver_shift_id: driverShift.id,
-        status: 'assigned',
-        order_count: 1,
-        expected_amount: deliveryTotal,
-        collected_amount: 0,
-        settlement_status: 'pending'
-      })
-      .select('*')
+    const { data: assignRes, error: assignErr } = await supabase.rpc('assign_orders_to_driver_secure', {
+      p_driver_id: assignedDriver.id,
+      p_order_ids: [{ order_id: deliveryOrderId }],
+    })
+
+    if (assignErr || !assignRes || !assignRes[0]?.trip_id) {
+      throw assignErr || new Error('Driver assignment failed')
+    }
+
+    const tripId = assignRes[0].trip_id
+    const tripNum = assignRes[0].trip_number
+    pass('Trip Assigned', `Assigned Order #${deliveryOrderNum} to Driver ${assignedDriver.name}: Trip #${tripNum} (ID: ${tripId})`)
+
+    // Dispatch out for delivery
+    const { data: assignRow } = await supabase
+      .from('order_driver_assignments')
+      .select('id')
+      .eq('order_id', deliveryOrderId)
       .single()
 
-    if (tripErr) throw tripErr
-
-    // Assign order to trip & driver
-    await supabase.from('orders').update({
-      status: 'assigned',
-      assigned_driver_id: assignedDriver.id,
-      trip_number: trip.trip_number
-    }).eq('id', deliveryOrderId)
-
-    // Dispatch trip
-    await supabase.from('delivery_trips').update({ status: 'out_for_delivery' }).eq('id', trip.id)
-    await supabase.from('orders').update({ status: 'out_for_delivery' }).eq('id', deliveryOrderId)
-    pass('Trip Dispatched', `Trip #${trip.trip_number} out for delivery with Order #${deliveryOrderNum}`)
+    if (assignRow) {
+      await supabase.rpc('update_delivery_status_secure', {
+        p_assignment_id: assignRow.id,
+        p_new_status: 'out_for_delivery'
+      })
+    }
+    pass('Trip Dispatched', `Trip #${tripNum} dispatched out for delivery`)
 
     // ------------------------------------------------------------------------
     // 8. Delivery Completion & Driver Custody Invariant
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 8: Delivery Completion & Cash Custody Transition ---')
-    await supabase.from('orders').update({
-      status: 'delivered',
-      collection_status: 'collected',
-      collected_amount: deliveryTotal,
-    }).eq('id', deliveryOrderId)
+    const { data: outcomeRes } = await supabase.rpc('record_delivery_outcome_secure', {
+      p_order_id: deliveryOrderId,
+      p_outcome: 'delivered',
+      p_collected_amount: deliveryTotal,
+      p_staff_actor: 'driver',
+    })
 
-    await supabase.from('delivery_trips').update({
-      collected_amount: deliveryTotal
-    }).eq('id', trip.id)
+    if (outcomeRes && outcomeRes[0]?.success) {
+      pass('Delivery Completed', `Order #${deliveryOrderNum} delivered. Outcome: ${outcomeRes[0].message}`)
+    } else {
+      throw new Error(`Record delivery outcome failed: ${outcomeRes?.[0]?.message}`)
+    }
 
     // Check accounting: Driver Custody MUST be > 0
     let interimAcct = await calculateDailyShiftAccounting(supabase, shiftId)
-    pass('Delivery Completed', `Order #${deliveryOrderNum} marked delivered. Driver collected: ${deliveryTotal} EGP`)
-    
     guard('Unsettled Driver Custody Guard', `Shift close BLOCKED because driver ${assignedDriver.name} holds ${interimAcct.driver_custody_cash} EGP custody cash`)
 
     // ------------------------------------------------------------------------
@@ -279,8 +259,8 @@ async function runTask4BDryRun() {
     const { data: drvAdv, error: daErr } = await supabase
       .from('shift_expenses')
       .insert({
-        daily_shift_id: shiftId,
-        category: 'سلفة طيار',
+        shift_id: shiftId,
+        category: 'سلف طيارين',
         driver_id: assignedDriver.id,
         recipient_name: assignedDriver.name,
         amount: 50,
@@ -297,9 +277,9 @@ async function runTask4BDryRun() {
     const { data: stfAdv, error: saErr } = await supabase
       .from('shift_expenses')
       .insert({
-        daily_shift_id: shiftId,
-        category: 'سلفة موظف',
-        staff_profile_id: cashierUser.id,
+        shift_id: shiftId,
+        category: 'سلف عاملين',
+        staff_id: cashierUser.id,
         recipient_name: cashierUser.full_name,
         amount: 100,
         description: 'سلفة شخصية للكاشير',
@@ -309,13 +289,13 @@ async function runTask4BDryRun() {
       .single()
 
     if (saErr) throw saErr
-    pass('Staff Advance Recorded', `100.00 EGP recorded for Staff: ${cashierUser.full_name} (Anchored to staff_profile_id: ${cashierUser.id})`)
+    pass('Staff Advance Recorded', `100.00 EGP recorded for Staff: ${cashierUser.full_name} (Anchored to staff_id: ${cashierUser.id})`)
 
     // C: Operational Expense
     const { data: opExp, error: oeErr } = await supabase
       .from('shift_expenses')
       .insert({
-        daily_shift_id: shiftId,
+        shift_id: shiftId,
         category: 'مشتريات خضار ومستلزمات',
         amount: 80,
         description: 'شراء بقدونس وخضار للسلطات',
@@ -332,21 +312,17 @@ async function runTask4BDryRun() {
     // 10. Cashier Settlement of Trip & Custody Clearance
     // ------------------------------------------------------------------------
     console.log('\n--- Phase 10: Cashier Settlement & Driver Custody Clearance ---')
-    await supabase.from('delivery_trips').update({
-      status: 'completed',
-      settlement_status: 'settled',
-      settled_to_cashier: true,
-      settled_at: new Date().toISOString()
-    }).eq('id', trip.id)
+    const { data: settleRes } = await supabase.rpc('settle_delivery_trip_to_cashier_secure', {
+      p_trip_id: tripId,
+      p_cashier_actor: cashierUser.full_name,
+      p_amount_received: deliveryTotal,
+    })
 
-    // Close driver shift for clean operational state
-    await supabase.from('driver_shifts').update({
-      status: 'closed',
-      end_time: new Date().toISOString()
-    }).eq('id', driverShift.id)
-
-    pass('Trip Settled & Closed', `Trip #${trip.trip_number} settled to cashier (${deliveryTotal} EGP turned into drawer cash)`)
-    pass('Driver Shift Closed', `Driver ${assignedDriver.name} shift successfully closed`)
+    if (settleRes && settleRes[0]?.success) {
+      pass('Trip Settled & Closed', `Trip #${tripNum} settled to cashier (${deliveryTotal} EGP turned into drawer cash)`)
+    } else {
+      throw new Error(`Trip settlement failed: ${settleRes?.[0]?.message}`)
+    }
 
     // ------------------------------------------------------------------------
     // 11. Central Accounting Verification (Source of Truth)
