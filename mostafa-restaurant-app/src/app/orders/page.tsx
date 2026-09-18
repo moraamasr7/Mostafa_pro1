@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabase'
 import { OrderStatus, STATUS_UI_CONFIG } from '@/types/orders'
 import { Driver } from '@/types/drivers'
 import OpsNavbar from '@/components/OpsNavbar'
+import GlobalShiftBar from '@/components/GlobalShiftBar'
 import ManualOrderModal from '@/components/ManualOrderModal'
 
 interface OrderItem {
@@ -57,38 +58,111 @@ interface Order {
   isNew?: boolean
 }
 
-export default function AdminOrdersPage() {
+type TabType = 'active' | 'pending' | 'processing' | 'ready' | 'takeaway' | 'delivery' | 'completed' | 'cancelled' | 'all'
+
+const TAB_CONFIG: { id: TabType; label: string; icon: string; countBadge?: (orders: Order[]) => number }[] = [
+  {
+    id: 'active',
+    label: 'النشطة حالياً',
+    icon: '🔥',
+    countBadge: (orders) =>
+      orders.filter((o) =>
+        ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+      ).length,
+  },
+  {
+    id: 'pending',
+    label: 'في الانتظار',
+    icon: '⏳',
+    countBadge: (orders) => orders.filter((o) => o.status === 'pending').length,
+  },
+  {
+    id: 'processing',
+    label: 'في المطبخ',
+    icon: '🍳',
+    countBadge: (orders) => orders.filter((o) => o.status === 'processing').length,
+  },
+  {
+    id: 'ready',
+    label: 'جاهز للاستلام/التوصيل',
+    icon: '📦',
+    countBadge: (orders) => orders.filter((o) => o.status === 'ready').length,
+  },
+  {
+    id: 'takeaway',
+    label: 'طابور الصالة والاستلام',
+    icon: '🏪',
+    countBadge: (orders) =>
+      orders.filter((o) => (o.order_type === 'takeaway' || o.order_type === 'dine_in') && !['completed', 'cancelled'].includes(o.status)).length,
+  },
+  {
+    id: 'delivery',
+    label: 'طابور الدليفري',
+    icon: '🛵',
+    countBadge: (orders) =>
+      orders.filter((o) => o.order_type === 'delivery' && !['delivered', 'completed', 'cancelled', 'failed'].includes(o.status)).length,
+  },
+  {
+    id: 'completed',
+    label: 'المكتملة',
+    icon: '✅',
+  },
+  {
+    id: 'cancelled',
+    label: 'الملغاة / تعذر',
+    icon: '❌',
+  },
+  {
+    id: 'all',
+    label: 'كافة الطلبات',
+    icon: '📋',
+  },
+]
+
+export default function FastOrdersBoardPage() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
   const [passcode, setPasscode] = useState('')
   const [loginError, setLoginError] = useState('')
   const [isLoggingIn, setIsLoggingIn] = useState(false)
 
+  // Core Data
   const [orders, setOrders] = useState<Order[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
+  const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number; opened_by: string } | null>(null)
+
+  // Status & UI
   const [loading, setLoading] = useState(true)
-  const [activeTab, setActiveTab] = useState<'active' | 'pending' | 'processing' | 'ready' | 'takeaway' | 'delivery' | 'completed' | 'cancelled' | 'all'>('active')
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [isOnline, setIsOnline] = useState(true)
+  const [activeTab, setActiveTab] = useState<TabType>('active')
+  const [searchQuery, setSearchQuery] = useState('')
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
+  const [openDropdownId, setOpenDropdownId] = useState<string | null>(null)
 
+  // Modals & Panels
   const [showDriverPanel, setShowDriverPanel] = useState(false)
   const [selectedOrderForDriver, setSelectedOrderForDriver] = useState<Order | null>(null)
   const [selectedDriverId, setSelectedDriverId] = useState<string>('')
   const [selectedOrderForFailure, setSelectedOrderForFailure] = useState<Order | null>(null)
   const [failureReason, setFailureReason] = useState<string>('العميل لا يرد على الهاتف')
   const [customFailureText, setCustomFailureText] = useState<string>('')
-  const [isOnline, setIsOnline] = useState<boolean>(true)
+  const [showManualOrderModal, setShowManualOrderModal] = useState(false)
 
+  // Driver creation state
   const [newDriverName, setNewDriverName] = useState('')
   const [newDriverPhone, setNewDriverPhone] = useState('')
   const [isAddingDriver, setIsAddingDriver] = useState(false)
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [dailyShift, setDailyShift] = useState<{ id: string; shift_number: number; opened_by: string } | null>(null)
-  const [hasCheckedShift, setHasCheckedShift] = useState(false)
-  const [showManualOrderModal, setShowManualOrderModal] = useState(false)
 
-  const fetchOrdersAndDrivers = async (tabFilter = activeTab, isBackground = false) => {
-    if (!isBackground && orders.length === 0) {
+  // Debounce ref for Realtime synchronization
+  const syncDebounceRef = useRef<NodeJS.Timeout | null>(null)
+
+  // ==========================================
+  // FAST DATA LOADER (Single Full Fetch + In-Memory Fast Views)
+  // ==========================================
+  const loadOrdersBoardData = useCallback(async (isBackground = false) => {
+    if (!isBackground) {
       setLoading(true)
     } else {
       setIsSyncing(true)
@@ -96,7 +170,7 @@ export default function AdminOrdersPage() {
 
     try {
       const [ordersRes, driversRes, shiftRes] = await Promise.all([
-        fetch(`/api/admin/orders?status=${tabFilter}`),
+        fetch('/api/admin/orders?status=all'),
         fetch('/api/admin/drivers'),
         fetch('/api/admin/daily-shift'),
       ])
@@ -108,9 +182,11 @@ export default function AdminOrdersPage() {
         return
       }
 
-      const ordersData = await ordersRes.json()
-      const driversData = await driversRes.json()
-      const shiftData = await shiftRes.json()
+      const [ordersData, driversData, shiftData] = await Promise.all([
+        ordersRes.json(),
+        driversRes.json(),
+        shiftRes.json(),
+      ])
 
       if (ordersRes.ok && driversRes.ok) {
         setIsAuthenticated(true)
@@ -121,11 +197,8 @@ export default function AdminOrdersPage() {
         } else {
           setDailyShift(null)
         }
-        setHasCheckedShift(true)
-      } else {
-        if (!isBackground) {
-          setActionError('حدث خطأ أثناء تحميل البيانات')
-        }
+      } else if (!isBackground) {
+        setActionError('حدث خطأ أثناء تحميل البيانات')
       }
     } catch {
       if (!isBackground) {
@@ -135,17 +208,24 @@ export default function AdminOrdersPage() {
       setLoading(false)
       setIsSyncing(false)
     }
-  }
+  }, [])
+
+  // Debounced trigger for realtime sync
+  const scheduleBackgroundSync = useCallback(() => {
+    if (syncDebounceRef.current) {
+      clearTimeout(syncDebounceRef.current)
+    }
+    syncDebounceRef.current = setTimeout(() => {
+      loadOrdersBoardData(true)
+    }, 300)
+  }, [loadOrdersBoardData])
 
   useEffect(() => {
-    const load = async () => {
-      await fetchOrdersAndDrivers(activeTab, false)
-    }
-    load()
+    loadOrdersBoardData(false)
 
     const handleOnline = () => {
       setIsOnline(true)
-      fetchOrdersAndDrivers(activeTab, true)
+      loadOrdersBoardData(true)
     }
     const handleOffline = () => {
       setIsOnline(false)
@@ -157,35 +237,47 @@ export default function AdminOrdersPage() {
       window.addEventListener('offline', handleOffline)
     }
 
-    const ordersChannel = supabase
-      .channel('admin-realtime-all')
+    const channel = supabase
+      .channel('orders-board-optimized')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
-        fetchOrdersAndDrivers(activeTab, true)
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => {
-        fetchOrdersAndDrivers(activeTab, true)
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => {
-        fetchOrdersAndDrivers(activeTab, true)
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_driver_assignments' }, () => {
-        fetchOrdersAndDrivers(activeTab, true)
+        scheduleBackgroundSync()
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
-        fetchOrdersAndDrivers(activeTab, true)
+        scheduleBackgroundSync()
       })
       .subscribe()
 
     return () => {
-      supabase.removeChannel(ordersChannel)
+      supabase.removeChannel(channel)
+      if (syncDebounceRef.current) clearTimeout(syncDebounceRef.current)
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', handleOnline)
         window.removeEventListener('offline', handleOffline)
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab])
+  }, [loadOrdersBoardData, scheduleBackgroundSync])
 
+  // Close open dropdowns when clicking outside
+  useEffect(() => {
+    const handleDocumentClick = () => setOpenDropdownId(null)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('click', handleDocumentClick)
+      return () => window.removeEventListener('click', handleDocumentClick)
+    }
+  }, [])
+
+  // ==========================================
+  // AUTHENTICATION HANDLERS
+  // ==========================================
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoginError('')
@@ -203,7 +295,7 @@ export default function AdminOrdersPage() {
         setIsAuthenticated(true)
         setActionError(null)
         setPasscode('')
-        fetchOrdersAndDrivers(activeTab)
+        loadOrdersBoardData(false)
       } else {
         setLoginError(data.error || 'رمز الدخول غير صحيح')
       }
@@ -214,17 +306,16 @@ export default function AdminOrdersPage() {
     }
   }
 
-  const handleLogout = async () => {
-    await fetch('/api/admin/logout', { method: 'POST' })
-    setIsAuthenticated(false)
-  }
-
+  // ==========================================
+  // ORDER STATUS MUTATION (Safe Optimistic + Rollback)
+  // ==========================================
   const handleStatusChange = async (orderId: string, currentStatus: OrderStatus, newStatus: OrderStatus) => {
     setUpdatingOrderId(orderId)
+    setOpenDropdownId(null)
     setActionError(null)
     setActionSuccess(null)
 
-    // تحديث تفاؤلي سريع في الواجهة (Optimistic UI Update) لعدم تجميد الشاشة أو إزعاج المستخدم
+    // Safe optimistic update
     const previousOrders = [...orders]
     setOrders((prev) =>
       prev.map((o) => (o.id === orderId ? { ...o, status: newStatus } : o))
@@ -244,15 +335,13 @@ export default function AdminOrdersPage() {
       const data = await res.json()
 
       if (!res.ok) {
-        // التراجع عن التحديث التفاؤلي إذا فشل السيرفر
         setOrders(previousOrders)
         setActionError(data.error || 'تعذر تحديث الحالة')
-        fetchOrdersAndDrivers(activeTab, true)
         return
       }
 
-      // مزامنة صامتة في الخلفية بدون لودينج مزعج
-      fetchOrdersAndDrivers(activeTab, true)
+      setActionSuccess(`تم تحديث الطلب إلى: ${STATUS_UI_CONFIG[newStatus]?.label || newStatus}`)
+      loadOrdersBoardData(true)
     } catch {
       setOrders(previousOrders)
       setActionError('حدث خطأ في الشبكة أثناء التحديث')
@@ -261,71 +350,81 @@ export default function AdminOrdersPage() {
     }
   }
 
-  const handleShiftAction = async (driverId: string, action: 'start' | 'end', allowReopen = false) => {
+  // Delivery status update (e.g. picked_up, out_for_delivery, delivered)
+  const handleDeliveryStatusUpdate = async (orderId: string, newStatus: string) => {
+    setUpdatingOrderId(orderId)
+    setOpenDropdownId(null)
     setActionError(null)
-    setActionSuccess(null)
 
     try {
-      const res = await fetch('/api/admin/shifts', {
+      const res = await fetch('/api/admin/assignments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          driver_id: driverId,
-          action,
-          allow_reopen: allowReopen,
+          action: 'update_status',
+          order_id: orderId,
+          new_status: newStatus,
         }),
       })
 
       const data = await res.json()
 
-      if (res.ok) {
-        setActionSuccess(data.message)
-        fetchOrdersAndDrivers(activeTab, true)
-      } else if (res.status === 409 && data.requires_override) {
-        const confirmReopen = window.confirm(
-          `⚠️ تنبيه رقابي:\n${data.error}\n\nهل أنت متأكد من فتح وردية ثانية استثنائية لهذا الطيار الآن؟`
-        )
-        if (confirmReopen) {
-          await handleShiftAction(driverId, 'start', true)
-        }
-      } else {
-        setActionError(data.error || 'فشل إجراء الوردية')
-      }
-    } catch {
-      setActionError('تعذر الاتصال بالسيرفر')
-    }
-  }
-
-  const handleAddDriver = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setIsAddingDriver(true)
-    setActionError(null)
-
-    try {
-      const res = await fetch('/api/admin/drivers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newDriverName, phone: newDriverPhone }),
-      })
-
-      const data = await res.json()
-
       if (!res.ok) {
-        setActionError(data.error || 'فشل إضافة الطيار')
+        setActionError(data.error || 'فشل تحديث حالة التوصيل')
         return
       }
 
-      setNewDriverName('')
-      setNewDriverPhone('')
-      setActionSuccess('تم إضافة الطيار وحفظ بياناته بنجاح')
-      fetchOrdersAndDrivers(activeTab)
+      setActionSuccess(data.message)
+      loadOrdersBoardData(true)
     } catch {
-      setActionError('تعذر إضافة الطيار')
+      setActionError('تعذر الاتصال بالسيرفر')
     } finally {
-      setIsAddingDriver(false)
+      setUpdatingOrderId(null)
     }
   }
 
+  // Confirm Failure with Reason
+  const handleConfirmFailure = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!selectedOrderForFailure) return
+
+    setUpdatingOrderId(selectedOrderForFailure.id)
+    setActionError(null)
+
+    const finalReason =
+      failureReason === 'سبب آخر'
+        ? customFailureText.trim() || 'سبب آخر لم يُحدد'
+        : failureReason
+
+    try {
+      const res = await fetch('/api/admin/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_id: selectedOrderForFailure.id,
+          new_status: 'failed',
+          failure_reason: finalReason,
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok) {
+        setActionSuccess('تم تسجيل حالة فشل التوصيل والسبب بنجاح')
+        setSelectedOrderForFailure(null)
+        setCustomFailureText('')
+        setFailureReason('العميل لا يرد على الهاتف')
+        loadOrdersBoardData(true)
+      } else {
+        setActionError(data.error || 'تعذر تسجيل فشل التوصيل')
+      }
+    } catch {
+      setActionError('تعذر الاتصال بالسيرفر')
+    } finally {
+      setUpdatingOrderId(null)
+    }
+  }
+
+  // Assign driver to order
   const handleAssignDriver = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!selectedOrderForDriver || !selectedDriverId) return
@@ -356,7 +455,7 @@ export default function AdminOrdersPage() {
       setActionSuccess(data.message)
       setSelectedOrderForDriver(null)
       setSelectedDriverId('')
-      fetchOrdersAndDrivers(activeTab)
+      loadOrdersBoardData(true)
     } catch {
       setActionError('تعذر الاتصال بالسيرفر')
     } finally {
@@ -364,95 +463,145 @@ export default function AdminOrdersPage() {
     }
   }
 
-  const handleDeliveryStatusUpdate = async (orderId: string, newStatus: string) => {
-    setUpdatingOrderId(orderId)
+  // Driver shift toggle
+  const handleShiftAction = async (driverId: string, action: 'start' | 'end', allowReopen = false) => {
     setActionError(null)
+    setActionSuccess(null)
 
     try {
-      const res = await fetch('/api/admin/assignments', {
+      const res = await fetch('/api/admin/shifts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'update_status',
-          order_id: orderId,
-          new_status: newStatus,
+          driver_id: driverId,
+          action,
+          allow_reopen: allowReopen,
         }),
+      })
+
+      const data = await res.json()
+
+      if (res.ok) {
+        setActionSuccess(data.message)
+        loadOrdersBoardData(true)
+      } else if (res.status === 409 && data.requires_override) {
+        const confirmReopen = window.confirm(
+          `⚠️ تنبيه رقابي:\n${data.error}\n\nهل أنت متأكد من فتح وردية ثانية استثنائية لهذا الطيار الآن؟`
+        )
+        if (confirmReopen) {
+          await handleShiftAction(driverId, 'start', true)
+        }
+      } else {
+        setActionError(data.error || 'فشل إجراء الوردية')
+      }
+    } catch {
+      setActionError('تعذر الاتصال بالسيرفر')
+    }
+  }
+
+  // Add new driver
+  const handleAddDriver = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setIsAddingDriver(true)
+    setActionError(null)
+
+    try {
+      const res = await fetch('/api/admin/drivers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newDriverName, phone: newDriverPhone }),
       })
 
       const data = await res.json()
 
       if (!res.ok) {
-        setActionError(data.error || 'فشل تحديث حالة التوصيل')
+        setActionError(data.error || 'فشل إضافة الطيار')
         return
       }
 
-      setActionSuccess(data.message)
-      fetchOrdersAndDrivers(activeTab)
+      setNewDriverName('')
+      setNewDriverPhone('')
+      setActionSuccess('تم إضافة الطيار بنجاح')
+      loadOrdersBoardData(true)
     } catch {
-      setActionError('تعذر الاتصال بالسيرفر')
+      setActionError('تعذر إضافة الطيار')
     } finally {
-      setUpdatingOrderId(null)
+      setIsAddingDriver(false)
     }
   }
 
-  const handleConfirmFailure = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedOrderForFailure) return
+  // ==========================================
+  // FAST CLIENT-SIDE FILTERING & SEARCH (0ms Latency)
+  // ==========================================
+  const filteredOrders = useMemo(() => {
+    let list = orders
 
-    setUpdatingOrderId(selectedOrderForFailure.id)
-    setActionError(null)
+    // 1. Tab filter
+    if (activeTab === 'active') {
+      list = list.filter((o) =>
+        ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+      )
+    } else if (activeTab === 'pending') {
+      list = list.filter((o) => o.status === 'pending')
+    } else if (activeTab === 'processing') {
+      list = list.filter((o) => o.status === 'processing')
+    } else if (activeTab === 'ready') {
+      list = list.filter((o) => o.status === 'ready')
+    } else if (activeTab === 'takeaway') {
+      list = list.filter(
+        (o) => (o.order_type === 'takeaway' || o.order_type === 'dine_in') && !['completed', 'cancelled'].includes(o.status)
+      )
+    } else if (activeTab === 'delivery') {
+      list = list.filter(
+        (o) => o.order_type === 'delivery' && !['delivered', 'completed', 'cancelled', 'failed'].includes(o.status)
+      )
+    } else if (activeTab === 'completed') {
+      list = list.filter((o) => o.status === 'completed' || o.status === 'delivered')
+    } else if (activeTab === 'cancelled') {
+      list = list.filter((o) => o.status === 'cancelled' || o.status === 'failed')
+    }
 
-    const finalReason = failureReason === 'سبب آخر'
-      ? (customFailureText.trim() || 'سبب آخر لم يُحدد')
-      : failureReason
+    // 2. Search query filter
+    const query = searchQuery.trim().toLowerCase()
+    if (query) {
+      list = list.filter((o) => {
+        const orderNumStr = String(o.order_number)
+        const nameStr = (o.customer_name || '').toLowerCase()
+        const phoneStr = (o.customer_phone || '').toLowerCase()
+        const addressStr = (o.delivery_address || '').toLowerCase()
 
-    try {
-      const res = await fetch('/api/admin/status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          order_id: selectedOrderForFailure.id,
-          new_status: 'failed',
-          failure_reason: finalReason,
-        }),
+        return (
+          orderNumStr.includes(query) ||
+          nameStr.includes(query) ||
+          phoneStr.includes(query) ||
+          addressStr.includes(query)
+        )
       })
-
-      const data = await res.json()
-      if (res.ok) {
-        setActionSuccess('تم تسجيل حالة فشل التوصيل والسبب بسوبابيز بنجاح')
-        setSelectedOrderForFailure(null)
-        setCustomFailureText('')
-        setFailureReason('العميل لا يرد على الهاتف')
-        fetchOrdersAndDrivers(activeTab)
-      } else {
-        setActionError(data.error || 'تعذر تسجيل فشل التوصيل')
-      }
-    } catch {
-      setActionError('تعذر الاتصال بالسيرفر')
-    } finally {
-      setUpdatingOrderId(null)
     }
-  }
 
+    return list
+  }, [orders, activeTab, searchQuery])
+
+  const eligibleDrivers = drivers.filter(
+    (d) => d.is_active && d.active_shift_id && (d.status === 'available' || d.status === 'busy')
+  )
+
+  // ==========================================
+  // UNATHENTICATED STATE VIEW
+  // ==========================================
   if (isAuthenticated === false) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-amber-900 to-zinc-900 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm bg-white/95 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/20 animate-fade-in-up">
+      <div className="min-h-screen bg-gradient-to-b from-zinc-900 to-zinc-950 flex items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-white rounded-3xl p-8 shadow-2xl border border-zinc-200">
           <div className="text-center mb-6">
             <span className="text-5xl block mb-2">🥩</span>
-            <h1 className="text-xl font-extrabold text-gray-900">
-              دخول طاقم مطعم مصطفى الجزار
-            </h1>
-            <p className="text-xs text-gray-500 mt-1">
-              أدخل كود الكاشير للوصول للوحة استقبال الطلبات والطيارين
-            </p>
+            <h1 className="text-xl font-black text-gray-900">دخول طاقم المطعم</h1>
+            <p className="text-xs text-gray-500 mt-1">أدخل رمز المرور للوصول إلى لوحة متابعة الطلبات والتشغيل</p>
           </div>
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">
-                كود الكاشير / الإدارة
-              </label>
+              <label className="block text-xs font-bold text-gray-700 mb-1">كود الكاشير / الإدارة</label>
               <input
                 type="password"
                 value={passcode}
@@ -472,7 +621,7 @@ export default function AdminOrdersPage() {
             <button
               type="submit"
               disabled={isLoggingIn || !passcode}
-              className="w-full bg-gradient-to-l from-amber-700 to-amber-600 hover:from-amber-800 hover:to-amber-700 text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-md shadow-amber-900/30 disabled:opacity-50"
+              className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-md disabled:opacity-50"
             >
               {isLoggingIn ? 'جاري التحقق...' : 'دخول اللوحة ✓'}
             </button>
@@ -482,127 +631,168 @@ export default function AdminOrdersPage() {
     )
   }
 
-  const eligibleDrivers = drivers.filter(
-    (d) => d.is_active && d.active_shift_id && (d.status === 'available' || d.status === 'busy')
-  )
-
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900 flex flex-col font-sans">
-      <OpsNavbar title="لوحة استقبال الطلبات والطيارين" subtitle="إدارة وتحديث الطلبات لحظياً" />
+    <div className="min-h-screen bg-gray-100 text-gray-900 flex flex-col font-sans pb-20 md:pb-6">
+      {/* Global Shell Header & Shift Bar */}
+      <OpsNavbar
+        title="لوحة متابعة الطلبات والتشغيل"
+        subtitle="إدارة وتحديث الطلبات لحظياً بأعلى سرعة واستجابة"
+      />
+      <GlobalShiftBar />
 
+      {/* Offline Connectivity Alert */}
       {!isOnline && (
         <div className="bg-amber-500 text-black px-4 py-2 text-center text-xs font-black animate-pulse flex items-center justify-center gap-2">
-          <span>⚠️ تم فقدان الاتصال بالإنترنت - يتم العمل في وضع عدم الاتصال حالياً (سيتم المزامنة تلقائياً فور عودة الشبكة)</span>
+          <span>⚠️ تم فقدان الاتصال بالإنترنت - يتم العمل في وضع عدم الاتصال حالياً (سيتم المزامنة تلقائياً)</span>
         </div>
       )}
 
-      <div className="bg-amber-950/10 border-b border-amber-900/20 px-4 py-2">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-amber-900 font-bold">
-              ⚡ يتم تحديث الطلبات لحظياً بدون Refresh عبر Supabase Realtime
-            </span>
-            {isSyncing && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-100/80 px-2 py-0.5 rounded-full animate-pulse border border-amber-300/60">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-600 animate-ping" />
-                مزامنة هادئة...
-              </span>
+      {/* Control Header: Search, Realtime Status, Fast Actions */}
+      <div className="bg-white border-b border-gray-200 px-4 py-3 shadow-xs">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3">
+          {/* Left: Search Input */}
+          <div className="flex-1 max-w-md relative">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="🔍 ابحث برقم الطلب، اسم العميل، أو الهاتف..."
+              className="w-full bg-gray-50 border border-gray-200 rounded-xl px-3.5 py-2 text-xs font-medium text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:bg-white transition-all"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs font-bold"
+              >
+                ✕
+              </button>
             )}
           </div>
-          <div className="flex items-center gap-2">
-            {hasCheckedShift && (
-              dailyShift ? (
-                <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-300 px-3 py-1 rounded-xl">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  وردية #{dailyShift.shift_number} مفتوحة ({dailyShift.opened_by})
-                </span>
-              ) : (
-                <Link
-                  href="/shift-control"
-                  className="inline-flex items-center gap-1.5 text-xs font-black text-white bg-red-600 hover:bg-red-700 px-3 py-1 rounded-xl shadow-sm transition-colors animate-bounce"
-                >
-                  <span>⚠️</span>
-                  <span>الوردية مغلقة — اضغط لفتح الوردية</span>
-                </Link>
-              )
+
+          {/* Right: Actions Bar */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {isSyncing && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-700 bg-amber-50 px-2 py-1 rounded-lg border border-amber-200">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
+                مزامنة...
+              </span>
             )}
+
             <button
               onClick={() => {
                 if (!dailyShift) {
-                  setActionError('تنبيه أمان التشغيل: يجب فتح الوردية اليومية أولاً من مركز التحكم لتسجيل طلبات يدوية.')
+                  setActionError('تنبيه: يجب فتح الوردية اليومية أولاً من مركز التحكم لتسجيل طلبات.')
                   return
                 }
                 setShowManualOrderModal(true)
               }}
-              className="bg-gradient-to-l from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 text-white text-xs font-black py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black py-2 px-3.5 rounded-xl shadow-xs transition-all flex items-center gap-1.5 active:scale-95"
             >
               <span>➕</span>
               <span>طلب يدوي جديد</span>
             </button>
+
             <button
               onClick={() => setShowDriverPanel(!showDriverPanel)}
-              className="bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold py-1.5 px-3 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+              className="bg-zinc-800 hover:bg-zinc-900 text-white text-xs font-bold py-2 px-3 rounded-xl transition-all flex items-center gap-1.5"
             >
-              🛵 شريط الطيارين ({drivers.filter((d) => d.active_shift_id).length} نشط)
+              <span>🛵</span>
+              <span>طاقم الطيارين ({drivers.filter((d) => d.active_shift_id).length})</span>
+            </button>
+
+            <button
+              onClick={() => loadOrdersBoardData(false)}
+              disabled={loading}
+              className="bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-bold p-2 rounded-xl transition-all cursor-pointer"
+              title="تحديث البيانات"
+            >
+              🔄
             </button>
           </div>
         </div>
+
+        {/* Status Horizontal Tabs */}
+        <div className="max-w-7xl mx-auto flex items-center gap-2 overflow-x-auto pt-3 pb-1 scrollbar-thin">
+          {TAB_CONFIG.map((tab) => {
+            const isActive = activeTab === tab.id
+            const count = tab.countBadge ? tab.countBadge(orders) : null
+
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-1.5 shrink-0 ${
+                  isActive
+                    ? 'bg-amber-600 text-white shadow-xs font-black'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <span>{tab.icon}</span>
+                <span>{tab.label}</span>
+                {count !== null && (
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-extrabold ${
+                      isActive ? 'bg-white/20 text-white' : 'bg-gray-200 text-gray-700'
+                    }`}
+                  >
+                    {count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
+      {/* Driver Fleet Slide-down Panel */}
       {showDriverPanel && (
-        <div className="bg-white border-b border-gray-300 shadow-lg p-5 animate-fade-in">
-          <div className="max-w-7xl mx-auto space-y-5">
-            <div className="flex justify-between items-center">
-              <h2 className="text-base font-extrabold text-gray-900 flex items-center gap-2">
-                🛵 طاقم طيارين الدليفري ورابط الورديات
+        <div className="bg-white border-b border-gray-300 shadow-md p-5 animate-fade-in">
+          <div className="max-w-7xl mx-auto space-y-4">
+            <div className="flex justify-between items-center border-b border-gray-100 pb-2">
+              <h2 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                <span>🛵 إدارة طاقم الطيارين وورديات الميدان</span>
               </h2>
               <button
                 onClick={() => setShowDriverPanel(false)}
-                className="text-xs font-bold text-gray-500 hover:text-gray-800"
+                className="text-xs font-bold text-gray-400 hover:text-gray-800"
               >
                 إغلاق ✕
               </button>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {drivers.map((d) => (
                 <div
                   key={d.id}
-                  className="bg-gray-50 p-4 rounded-2xl border border-gray-200 flex flex-col justify-between space-y-3"
+                  className="bg-gray-50 p-3.5 rounded-2xl border border-gray-200 flex items-center justify-between"
                 >
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h3 className="font-extrabold text-sm text-gray-900">{d.name}</h3>
-                    </div>
+                  <div>
+                    <h3 className="font-black text-xs text-gray-900">{d.name}</h3>
                     <span
-                      className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${
+                      className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-md mt-1 ${
                         d.status === 'available'
-                          ? 'bg-green-100 text-green-800 border-green-300'
+                          ? 'bg-green-100 text-green-800'
                           : d.status === 'busy'
-                          ? 'bg-amber-100 text-amber-800 border-amber-300'
-                          : 'bg-gray-200 text-gray-700 border-gray-300'
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-gray-200 text-gray-700'
                       }`}
                     >
                       {d.status === 'available' ? '🟢 متاح' : d.status === 'busy' ? '🟡 مشغول' : '⚪ أوفلاين'}
                     </span>
                   </div>
 
-                  <div className="flex justify-between items-center text-xs pt-2 border-t border-gray-200">
-                    <span className="text-gray-500 font-medium">
-                      الوردية: {d.active_shift_id ? '🟢 مفتوحة' : '🔴 مغلقة'}
-                    </span>
-
+                  <div>
                     {d.active_shift_id ? (
                       <button
                         onClick={() => handleShiftAction(d.id, 'end')}
-                        className="bg-red-50 hover:bg-red-100 text-red-700 font-bold px-3 py-1.5 rounded-lg border border-red-200 text-xs transition-colors"
+                        className="bg-red-50 hover:bg-red-100 text-red-700 font-bold px-3 py-1.5 rounded-xl border border-red-200 text-xs transition-colors"
                       >
-                        ⏹️ إنهاء الوردية
+                        ⏹️ إنهاء وردية
                       </button>
                     ) : (
                       <button
                         onClick={() => handleShiftAction(d.id, 'start')}
-                        className="bg-green-600 hover:bg-green-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-colors shadow-sm"
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-3 py-1.5 rounded-xl text-xs transition-colors shadow-xs"
                       >
                         ▶️ بدء وردية
                       </button>
@@ -612,7 +802,10 @@ export default function AdminOrdersPage() {
               ))}
             </div>
 
-            <form onSubmit={handleAddDriver} className="bg-amber-50/60 border border-amber-200 p-4 rounded-2xl flex flex-wrap items-center gap-3 text-xs">
+            <form
+              onSubmit={handleAddDriver}
+              className="bg-amber-50/70 border border-amber-200 p-3 rounded-2xl flex flex-wrap items-center gap-2 text-xs"
+            >
               <span className="font-bold text-amber-900">➕ إضافة طيار جديد:</span>
               <input
                 type="text"
@@ -620,171 +813,100 @@ export default function AdminOrdersPage() {
                 value={newDriverName}
                 onChange={(e) => setNewDriverName(e.target.value)}
                 required
-                className="px-3 py-2 rounded-xl border border-gray-300 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                className="px-3 py-1.5 rounded-xl border border-gray-300 focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
               />
               <input
                 type="tel"
-                placeholder="رقم الموبايل (11 رقم)..."
+                placeholder="رقم الهاتف (11 رقم)..."
                 value={newDriverPhone}
                 onChange={(e) => setNewDriverPhone(e.target.value)}
                 required
-                className="px-3 py-2 rounded-xl border border-gray-300 focus:outline-none focus:ring-1 focus:ring-amber-500 text-left"
+                className="px-3 py-1.5 rounded-xl border border-gray-300 focus:outline-none focus:ring-1 focus:ring-amber-500 bg-white"
                 dir="ltr"
               />
               <button
                 type="submit"
                 disabled={isAddingDriver}
-                className="bg-amber-700 hover:bg-amber-800 text-white font-bold px-4 py-2 rounded-xl shadow-sm transition-colors disabled:opacity-50"
+                className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition-colors disabled:opacity-50"
               >
-                {isAddingDriver ? 'جاري الإضافة...' : 'حفظ الطيار ✓'}
+                {isAddingDriver ? 'جاري الإضافة...' : 'حفظ ✓'}
               </button>
             </form>
           </div>
         </div>
       )}
 
-      <div className="bg-white border-b border-gray-200 shadow-sm sticky top-[68px] z-20">
-        <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center gap-2 overflow-x-auto">
-          <button
-            onClick={() => setActiveTab('active')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'active'
-                ? 'bg-amber-600 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            🔥 النشطة حالياً
-          </button>
-          <button
-            onClick={() => setActiveTab('pending')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'pending'
-                ? 'bg-amber-600 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            🕐 في انتظار التأكيد
-          </button>
-          <button
-            onClick={() => setActiveTab('processing')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'processing'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            👨‍🍳 جاري التحضير
-          </button>
-          <button
-            onClick={() => setActiveTab('ready')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'ready'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            📦 جاهز بالمطبخ
-          </button>
-          <button
-            onClick={() => setActiveTab('takeaway')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'takeaway'
-                ? 'bg-amber-700 text-white shadow-sm ring-2 ring-amber-400'
-                : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
-            }`}
-          >
-            🏪 طابور الاستلام من الفرع
-          </button>
-          <button
-            onClick={() => setActiveTab('delivery')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'delivery'
-                ? 'bg-purple-700 text-white shadow-sm ring-2 ring-purple-400'
-                : 'bg-purple-50 text-purple-900 border border-purple-200 hover:bg-purple-100'
-            }`}
-          >
-            🛵 طابور التوصيل للمنزل
-          </button>
-          <button
-            onClick={() => setActiveTab('completed')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'completed'
-                ? 'bg-green-600 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            ✅ المكتملة
-          </button>
-          <button
-            onClick={() => setActiveTab('cancelled')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap transition-all ${
-              activeTab === 'cancelled'
-                ? 'bg-red-600 text-white shadow-sm'
-                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-            }`}
-          >
-            ❌ الملغاة
-          </button>
-        </div>
-      </div>
-
-      <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full space-y-4">
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto px-4 py-5 flex-1 w-full space-y-4">
+        {/* Global Notifications */}
         {actionError && (
-          <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-2xl flex items-center justify-between text-xs font-bold">
+          <div className="bg-red-50 border border-red-200 text-red-800 p-3.5 rounded-2xl flex items-center justify-between text-xs font-bold shadow-xs">
             <span>⚠️ {actionError}</span>
-            <button onClick={() => setActionError(null)} className="text-red-500 font-extrabold">
+            <button onClick={() => setActionError(null)} className="text-red-500 font-extrabold px-1">
               ✕
             </button>
           </div>
         )}
 
         {actionSuccess && (
-          <div className="bg-green-50 border border-green-200 text-green-800 p-4 rounded-2xl flex items-center justify-between text-xs font-bold">
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 p-3.5 rounded-2xl flex items-center justify-between text-xs font-bold shadow-xs">
             <span>✅ {actionSuccess}</span>
-            <button onClick={() => setActionSuccess(null)} className="text-green-600 font-extrabold">
+            <button onClick={() => setActionSuccess(null)} className="text-emerald-500 font-extrabold px-1">
               ✕
             </button>
           </div>
         )}
 
+        {/* Loading Skeletons */}
         {loading && orders.length === 0 ? (
-          <div className="text-center py-20">
-            <div className="w-10 h-10 border-4 border-amber-300 border-t-amber-600 rounded-full animate-spin mx-auto" />
-            <p className="mt-4 text-xs font-bold text-gray-500">جاري تحميل الطلبات والطيارين...</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[1, 2, 3, 4, 5, 6].map((idx) => (
+              <div key={idx} className="bg-white rounded-3xl border border-gray-200 p-5 space-y-3 animate-pulse">
+                <div className="flex justify-between items-center">
+                  <div className="h-6 w-20 bg-gray-200 rounded-lg" />
+                  <div className="h-5 w-24 bg-gray-200 rounded-full" />
+                </div>
+                <div className="h-4 w-36 bg-gray-200 rounded" />
+                <div className="h-16 bg-gray-100 rounded-xl" />
+                <div className="h-9 bg-gray-200 rounded-xl" />
+              </div>
+            ))}
           </div>
-        ) : orders.length === 0 ? (
-          <div className="text-center py-20 bg-white rounded-3xl border border-gray-200 shadow-sm max-w-md mx-auto">
-            <span className="text-5xl block mb-3">📦</span>
-            <h3 className="font-extrabold text-base text-gray-800">لا توجد طلبات في هذا القسم</h3>
-            <p className="text-xs text-gray-400 mt-1">الطلبات الجديدة ستظهر فوراً بدون الحاجة للتحديث</p>
+        ) : filteredOrders.length === 0 ? (
+          <div className="text-center py-20 bg-white rounded-3xl border border-gray-200 shadow-xs max-w-md mx-auto space-y-2">
+            <span className="text-4xl block">📦</span>
+            <h3 className="font-black text-sm text-gray-800">لا توجد طلبات مطابقة</h3>
+            <p className="text-xs text-gray-400">
+              {searchQuery ? 'جرب البحث بكلمة أخرى أو تغيير القسم' : 'الطلبات الجديدة ستظهر فوراً'}
+            </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {orders.map((order) => {
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredOrders.map((order) => {
               const statusCfg = STATUS_UI_CONFIG[order.status] || STATUS_UI_CONFIG.pending
               const isBusy = updatingOrderId === order.id
+              const isDropdownOpen = openDropdownId === order.id
 
               return (
                 <div
                   key={order.id}
-                  className={`bg-white rounded-3xl border shadow-sm overflow-hidden flex flex-col transition-all duration-300 ${
-                    order.isNew ? 'ring-2 ring-amber-500 animate-pulse' : 'border-gray-200'
+                  className={`bg-white rounded-3xl border shadow-xs overflow-hidden flex flex-col transition-all duration-200 ${
+                    order.isNew ? 'ring-2 ring-amber-500 animate-pulse' : 'border-gray-200 hover:border-gray-300'
                   }`}
                 >
-                  <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
+                  {/* Card Header: Order Number, Badge, Time */}
+                  <div className="p-3.5 bg-gray-50 border-b border-gray-100 flex items-center justify-between">
                     <div>
-                      <span className="text-xs font-bold text-gray-400">رقم الطلب</span>
-                      <h2 className="text-2xl font-black text-gray-900 tabular-nums">
-                        #{order.order_number}
-                      </h2>
+                      <span className="text-[10px] font-bold text-gray-400 block">رقم الطلب</span>
+                      <h2 className="text-xl font-black text-gray-900 tabular-nums">#{order.order_number}</h2>
                     </div>
                     <div className="text-left">
                       <span
-                        className={`inline-block px-3 py-1 rounded-full text-xs font-extrabold border ${statusCfg.bgColor} ${statusCfg.color} ${statusCfg.borderColor}`}
+                        className={`inline-block px-2.5 py-0.5 rounded-full text-[11px] font-extrabold border ${statusCfg.bgColor} ${statusCfg.color} ${statusCfg.borderColor}`}
                       >
                         {statusCfg.label}
                       </span>
-                      <p className="text-[11px] font-semibold text-gray-400 mt-1" dir="ltr">
+                      <p className="text-[10px] font-semibold text-gray-400 mt-0.5" dir="ltr">
                         {new Date(order.created_at).toLocaleTimeString('ar-EG', {
                           hour: '2-digit',
                           minute: '2-digit',
@@ -793,25 +915,27 @@ export default function AdminOrdersPage() {
                     </div>
                   </div>
 
-                  <div className="p-4 border-b border-gray-100 bg-amber-50/20 flex flex-col space-y-1">
-                    <div className="flex justify-between items-center">
+                  {/* Customer Info & Order Type */}
+                  <div className="p-3.5 border-b border-gray-100 bg-amber-50/15 space-y-1.5 text-xs">
+                    <div className="flex justify-between items-start gap-2">
                       <div>
-                        <p className="text-xs font-bold text-gray-900">{order.customer_name}</p>
+                        <h4 className="font-black text-gray-900">{order.customer_name}</h4>
                         <a
                           href={`tel:${order.customer_phone}`}
-                          className="text-xs font-semibold text-amber-700 hover:underline dir-ltr block mt-0.5"
+                          className="text-amber-700 hover:underline font-bold text-[11px] dir-ltr block mt-0.5"
                         >
                           📞 {order.customer_phone}
                         </a>
                       </div>
-                      <div className="flex items-center gap-1.5">
+
+                      <div className="flex items-center gap-1.5 shrink-0">
                         {order.order_source === 'manual' && (
-                          <span className="text-[10px] font-black px-2 py-0.5 rounded-lg bg-orange-100 text-orange-800 border border-orange-200">
-                            📝 كاشير يدوي
+                          <span className="text-[9px] font-black px-1.5 py-0.5 rounded-md bg-orange-100 text-orange-800 border border-orange-200">
+                            كاشير يدوي
                           </span>
                         )}
                         <span
-                          className={`text-[10px] font-bold px-2.5 py-1 rounded-lg ${
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-lg ${
                             order.order_type === 'delivery'
                               ? 'bg-purple-100 text-purple-800 border border-purple-200'
                               : order.order_type === 'dine_in'
@@ -819,298 +943,264 @@ export default function AdminOrdersPage() {
                               : 'bg-amber-100 text-amber-800 border border-amber-200'
                           }`}
                         >
-                          {order.order_type === 'delivery' ? '🛵 دليفري' : order.order_type === 'dine_in' ? '🍽️ صالة' : '🏪 استلام فرع'}
+                          {order.order_type === 'delivery'
+                            ? '🛵 دليفري'
+                            : order.order_type === 'dine_in'
+                            ? '🍽️ صالة'
+                            : '🏪 استلام فرع'}
                         </span>
                       </div>
                     </div>
 
+                    {/* Delivery Address & Distance */}
                     {order.delivery_address && (
-                      <div className="text-xs text-gray-700 bg-white p-2.5 rounded-xl border border-gray-200 mt-1 space-y-1.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <p>
-                            📍 <strong>العنوان:</strong> {order.delivery_address}
-                          </p>
-                          {order.customer_lat && order.customer_lng && (
-                            <a
-                              href={`https://www.google.com/maps/dir/?api=1&origin=30.126131,31.298350&destination=${order.customer_lat},${order.customer_lng}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="shrink-0 bg-sky-50 hover:bg-sky-100 text-sky-800 border border-sky-300 text-[10px] font-black px-2 py-0.5 rounded-lg flex items-center gap-1 transition-all"
-                              title="فتح خط السير من المطعم إلى موقع العميل على خرائط جوجل"
-                            >
-                              <span>🗺️ المسار بالخريطة</span>
-                            </a>
-                          )}
-                        </div>
-
-                        {(order.delivery_distance_km != null || (order.delivery_fee != null && order.order_type === 'delivery')) && (
-                          <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100 text-[11px] font-bold">
-                            {order.delivery_distance_km != null && (
-                              <span className="bg-amber-50 text-amber-900 border border-amber-200 px-2 py-0.5 rounded-md">
-                                📏 المسافة: {order.delivery_distance_km} كم
-                              </span>
-                            )}
-                            {order.delivery_fee != null && order.order_type === 'delivery' && (
-                              <span className="bg-emerald-50 text-emerald-900 border border-emerald-200 px-2 py-0.5 rounded-md">
-                                🛵 خدمة التوصيل: {order.delivery_fee} ج.م
-                              </span>
-                            )}
-                          </div>
+                      <div className="bg-white p-2 rounded-xl border border-gray-200 text-[11px] space-y-1">
+                        <p className="text-gray-700">
+                          📍 <strong>العنوان:</strong> {order.delivery_address}
+                        </p>
+                        {order.customer_lat && order.customer_lng && (
+                          <a
+                            href={`https://www.google.com/maps/dir/?api=1&origin=30.126131,31.298350&destination=${order.customer_lat},${order.customer_lng}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[10px] text-sky-700 font-bold hover:underline"
+                          >
+                            <span>🗺️ خط السير بالخريطة ↗</span>
+                          </a>
                         )}
                       </div>
                     )}
 
-                    <div className="flex flex-wrap gap-1.5 mt-1 text-[11px]">
-                      <span className="bg-emerald-50 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-lg font-bold">
-                        💳 الدفع: {order.payment_method === 'instapay' ? 'إنستا باي ⚡' : order.payment_method === 'wallet' ? 'فودافون كاش 📱' : order.payment_method === 'card' ? 'فيزا / بطاقة 💳' : 'نقدي كاش 💵'}
-                      </span>
-                      {order.payment_receipt_url && (
-                        <div className="w-full bg-blue-50/80 border border-blue-200 p-2 rounded-xl text-blue-900 font-semibold space-y-1">
-                          <div className="flex justify-between items-center text-[11px]">
-                            <span>📄 <strong>إثبات/رقم التحويل:</strong></span>
-                            <a
-                              href={order.payment_receipt_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:underline font-bold text-[10px]"
-                            >
-                              فتح الرابط الكامل ↗
-                            </a>
-                          </div>
-                          {order.payment_receipt_url.startsWith('http') ? (
-                            /* eslint-disable-next-line @next/next/no-img-element */
-                            <img
-                              src={order.payment_receipt_url}
-                              alt="صورة إثبات التحويل"
-                              className="w-full max-h-36 object-contain rounded-lg border border-blue-300 bg-white"
-                            />
-                          ) : (
-                            <p className="text-xs font-mono bg-white p-1.5 rounded border border-blue-200 dir-ltr text-left">
-                              {order.payment_receipt_url}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
+                    {/* Assigned Driver Badge */}
                     {order.assigned_driver && (
-                      <div className="bg-indigo-50 border border-indigo-200 p-2.5 rounded-xl text-xs flex justify-between items-center mt-1">
-                        <div>
-                          <p className="font-extrabold text-indigo-900">
-                            🛵 الطيار: {order.assigned_driver.driver_name}
-                          </p>
-                        </div>
+                      <div className="bg-indigo-50 border border-indigo-200 px-2.5 py-1.5 rounded-xl flex justify-between items-center text-[11px]">
+                        <span className="font-black text-indigo-900">
+                          🛵 الطيار: {order.assigned_driver.driver_name}
+                        </span>
                         <button
                           onClick={() => {
                             setSelectedOrderForDriver(order)
                             setSelectedDriverId('')
                           }}
-                          className="bg-white hover:bg-indigo-100 text-indigo-800 text-[10px] font-bold px-2 py-1 rounded-lg border border-indigo-300"
+                          className="bg-white text-indigo-800 hover:bg-indigo-100 font-bold px-2 py-0.5 rounded border border-indigo-300 text-[10px]"
                         >
-                          🔄 تغيير الطيار
+                          تغيير
                         </button>
-                      </div>
-                    )}
-
-                    {order.status === 'failed' && order.failure_reason && (
-                      <div className="mt-2 bg-rose-50 border border-rose-200 p-2.5 rounded-xl text-xs text-rose-900">
-                        <span className="font-bold flex items-center gap-1 text-rose-700">
-                          🚨 <strong>سبب تعذر التوصيل:</strong>
-                        </span>
-                        <p className="mt-0.5 font-bold text-rose-950 pr-2">{order.failure_reason}</p>
-                      </div>
-                    )}
-                    {order.status === 'cancelled' && (order.cancellation_reason || order.failure_reason) && (
-                      <div className="mt-2 bg-amber-50 border border-amber-200 p-2.5 rounded-xl text-xs text-amber-900">
-                        <span className="font-bold flex items-center gap-1 text-amber-700">
-                          ❌ <strong>سبب الإلغاء المسجل:</strong>
-                        </span>
-                        <p className="mt-0.5 font-bold text-amber-950 pr-2">{order.cancellation_reason || order.failure_reason}</p>
                       </div>
                     )}
                   </div>
 
-                  <div className="p-4 flex-1 space-y-2 max-h-56 overflow-y-auto">
+                  {/* Order Items List (Compact Scroll) */}
+                  <div className="p-3.5 flex-1 space-y-1.5 max-h-44 overflow-y-auto">
                     {order.order_items && order.order_items.length > 0 ? (
                       order.order_items.map((item) => (
                         <div
                           key={item.id}
-                          className="flex justify-between items-start text-xs bg-gray-50 p-2.5 rounded-xl border border-gray-100"
+                          className="flex justify-between items-start text-xs bg-gray-50 p-2 rounded-xl border border-gray-100"
                         >
                           <div>
                             <span className="font-bold text-gray-900">
                               {item.item_variants?.menu_items?.name || 'صنف'}
                             </span>
                             {item.item_variants?.variant_name && item.item_variants.variant_name !== 'افتراضي' && (
-                              <span className="text-gray-500 mr-1">
+                              <span className="text-gray-500 mr-1 text-[11px]">
                                 ({item.item_variants.variant_name})
                               </span>
                             )}
                             {item.item_notes && (
-                              <p className="text-[11px] text-amber-700 font-medium mt-0.5">
-                                📝 {item.item_notes}
-                              </p>
+                              <p className="text-[10px] text-amber-700 font-medium">📝 {item.item_notes}</p>
                             )}
                           </div>
-                          <span className="font-extrabold text-gray-800 shrink-0 bg-white px-2 py-0.5 rounded-md border border-gray-200">
+                          <span className="font-black text-gray-800 shrink-0 bg-white px-1.5 py-0.5 rounded border border-gray-200 text-xs">
                             {item.quantity}×
                           </span>
                         </div>
                       ))
                     ) : (
-                      <p className="text-xs text-gray-400">لا توجد تفاصيل أصلية</p>
+                      <p className="text-xs text-gray-400">لا توجد أصناف مسجلة</p>
                     )}
 
                     {order.notes && (
-                      <div className="bg-amber-50 border border-amber-200 p-2.5 rounded-xl text-xs text-amber-900 font-medium">
+                      <div className="bg-amber-50 border border-amber-200 p-2 rounded-xl text-[11px] text-amber-900">
                         📌 <strong>ملاحظات:</strong> {order.notes}
                       </div>
                     )}
                   </div>
 
-                  <div className="p-4 bg-gray-50 border-t border-gray-100 space-y-3 mt-auto">
+                  {/* Card Footer: Total Amount + Smart Primary Action + Secondary Menu */}
+                  <div className="p-3.5 bg-gray-50 border-t border-gray-100 mt-auto space-y-2.5">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="font-bold text-gray-500">الإجمالي النهائي</span>
-                      <span className="font-black text-lg text-amber-700 tabular-nums">
+                      <span className="font-bold text-gray-500">الإجمالي:</span>
+                      <span className="font-black text-base text-amber-700 tabular-nums">
                         {Number(order.total_amount).toFixed(0)} ج.م
                       </span>
                     </div>
 
-                    {order.status === 'pending' && (
-                      <div className="flex gap-2">
+                    {/* SMART ACTION BAR */}
+                    <div className="flex items-center gap-2 relative">
+                      {/* State: PENDING */}
+                      {order.status === 'pending' && (
                         <button
                           onClick={() => handleStatusChange(order.id, 'pending', 'processing')}
                           disabled={isBusy}
-                          className="flex-1 bg-gradient-to-l from-blue-700 to-blue-600 hover:from-blue-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50"
                         >
-                          {isBusy ? 'جاري التحديث...' : '🔥 بدء التحضير'}
+                          {isBusy ? 'جاري التحديث...' : '🔥 قبول وبدء التحضير'}
                         </button>
-                        <button
-                          onClick={() => handleStatusChange(order.id, 'pending', 'cancelled')}
-                          disabled={isBusy}
-                          className="bg-red-50 hover:bg-red-100 text-red-700 font-bold px-3 py-2.5 rounded-xl text-xs transition-all border border-red-200 disabled:opacity-50"
-                        >
-                          ❌ إلغاء
-                        </button>
-                      </div>
-                    )}
+                      )}
 
-                    {order.status === 'processing' && (
-                      <div className="flex gap-2">
+                      {/* State: PROCESSING */}
+                      {order.status === 'processing' && (
                         <button
                           onClick={() => handleStatusChange(order.id, 'processing', 'ready')}
                           disabled={isBusy}
-                          className="flex-1 bg-gradient-to-l from-emerald-700 to-emerald-600 hover:from-emerald-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50"
                         >
                           {isBusy ? 'جاري التحديث...' : '📦 جاهز بالمطبخ'}
                         </button>
-                        {order.order_type === 'takeaway' && (
-                          <button
-                            onClick={() => handleStatusChange(order.id, 'processing', 'completed')}
-                            disabled={isBusy}
-                            className="bg-green-700 hover:bg-green-800 text-white font-bold px-3 py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
-                          >
-                            ✅ استلام
-                          </button>
-                        )}
-                      </div>
-                    )}
+                      )}
 
-                    {order.status === 'ready' && order.order_type === 'delivery' && (
-                      <div className="flex gap-2">
+                      {/* State: READY (Takeaway vs Delivery) */}
+                      {order.status === 'ready' && order.order_type === 'delivery' && (
                         <button
                           onClick={() => {
                             setSelectedOrderForDriver(order)
                             setSelectedDriverId('')
                           }}
                           disabled={isBusy}
-                          className="flex-1 bg-gradient-to-l from-purple-700 to-purple-600 hover:from-purple-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50 flex items-center justify-center gap-1"
+                          className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50 flex items-center justify-center gap-1"
                         >
                           🛵 تعيين طيار دليفري
                         </button>
-                        <button
-                          onClick={() => handleStatusChange(order.id, 'ready', 'cancelled')}
-                          disabled={isBusy}
-                          className="bg-red-50 hover:bg-red-100 text-red-700 font-bold px-3 py-2.5 rounded-xl text-xs transition-all border border-red-200 disabled:opacity-50"
-                        >
-                          ❌ إلغاء
-                        </button>
-                      </div>
-                    )}
+                      )}
 
-                    {order.status === 'ready' && order.order_type === 'takeaway' && (
-                      <div className="flex gap-2">
+                      {order.status === 'ready' && order.order_type !== 'delivery' && (
                         <button
                           onClick={() => handleStatusChange(order.id, 'ready', 'completed')}
                           disabled={isBusy}
-                          className="flex-1 bg-gradient-to-l from-green-700 to-green-600 hover:from-green-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50"
                         >
-                          ✅ تم تسليم العميل بالفرع
+                          {isBusy ? 'جاري التحديث...' : '✅ تم تسليم العميل'}
                         </button>
-                      </div>
-                    )}
+                      )}
 
-                    {order.status === 'assigned' && (
-                      <div className="flex gap-2">
+                      {/* State: ASSIGNED */}
+                      {order.status === 'assigned' && (
                         <button
                           onClick={() => handleDeliveryStatusUpdate(order.id, 'picked_up')}
                           disabled={isBusy}
-                          className="flex-1 bg-cyan-700 hover:bg-cyan-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                          className="flex-1 bg-cyan-700 hover:bg-cyan-800 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50"
                         >
-                          🎒 تم استلام الشحنة بالفرع
+                          {isBusy ? 'جاري التحديث...' : '🎒 استلم الطيار بالفرع'}
                         </button>
+                      )}
+
+                      {/* State: PICKED UP */}
+                      {order.status === 'picked_up' && (
                         <button
                           onClick={() => handleDeliveryStatusUpdate(order.id, 'out_for_delivery')}
                           disabled={isBusy}
-                          className="flex-1 bg-purple-700 hover:bg-purple-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                          className="flex-1 bg-purple-700 hover:bg-purple-800 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50"
                         >
-                          🚚 خرج مع الطيار للعميل
+                          {isBusy ? 'جاري التحديث...' : '🚚 خرج في الطريق للعميل'}
                         </button>
-                      </div>
-                    )}
+                      )}
 
-                    {order.status === 'picked_up' && (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleDeliveryStatusUpdate(order.id, 'out_for_delivery')}
-                          disabled={isBusy}
-                          className="flex-1 bg-purple-700 hover:bg-purple-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
-                        >
-                          🚚 خرج مع الطيار للعميل (انطلاق الدليفري)
-                        </button>
-                      </div>
-                    )}
-
-                    {order.status === 'out_for_delivery' && (
-                      <div className="flex gap-2">
+                      {/* State: OUT FOR DELIVERY */}
+                      {order.status === 'out_for_delivery' && (
                         <button
                           onClick={() => handleDeliveryStatusUpdate(order.id, 'delivered')}
                           disabled={isBusy}
-                          className="flex-1 bg-green-700 hover:bg-green-800 text-white font-bold py-2.5 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
+                          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 rounded-xl text-xs transition-all shadow-xs disabled:opacity-50"
                         >
-                          🎉 تم التوصيل للعميل بنجاح
+                          {isBusy ? 'جاري التحديث...' : '🎉 تم التوصيل بنجاح'}
                         </button>
-                        <button
-                          onClick={() => setSelectedOrderForFailure(order)}
-                          disabled={isBusy}
-                          className="bg-red-700 hover:bg-red-800 text-white font-bold px-3 py-2 rounded-xl text-xs transition-all shadow-sm disabled:opacity-50"
-                        >
-                          ⚠️ تسجيل فشل التوصيل
-                        </button>
-                      </div>
-                    )}
+                      )}
 
-                    {(order.status === 'completed' || order.status === 'cancelled' || order.status === 'delivered' || order.status === 'failed') && (
-                      <div className="text-center py-2 bg-gray-100 rounded-xl text-xs font-bold text-gray-600">
-                        {order.status === 'delivered'
-                          ? '🎉 تم التوصيل للعميل بنجاح'
-                          : order.status === 'failed'
-                          ? '⚠️ تعذر التوصيل (مُسجل بالسبب في سوبابيز)'
-                          : order.status === 'completed'
-                          ? '✓ مكتمل ومعالج'
-                          : '✕ ملغى'}
-                      </div>
-                    )}
+                      {/* State: FINAL STATES */}
+                      {['completed', 'delivered', 'cancelled', 'failed'].includes(order.status) && (
+                        <div className="flex-1 text-center py-1.5 bg-gray-200 rounded-xl text-xs font-bold text-gray-600">
+                          {order.status === 'delivered' || order.status === 'completed'
+                            ? '✓ طلب منتهي ومكتمل'
+                            : '✕ طلب ملغى / تعذر'}
+                        </div>
+                      )}
+
+                      {/* SECONDARY ACTION MENU TRIGGER (⋮) */}
+                      {!['completed', 'delivered', 'cancelled', 'failed'].includes(order.status) && (
+                        <div className="relative" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => setOpenDropdownId(isDropdownOpen ? null : order.id)}
+                            className="p-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-xl text-xs font-black transition-colors"
+                            title="خيارات إضافية"
+                          >
+                            ⋮
+                          </button>
+
+                          {/* DROPDOWN MENU */}
+                          {isDropdownOpen && (
+                            <div className="absolute left-0 bottom-full mb-1 w-44 bg-zinc-900 text-white rounded-2xl shadow-2xl border border-zinc-700 p-1.5 z-30 text-xs space-y-1">
+                              {/* Direct Takeaway Complete if in processing */}
+                              {order.status === 'processing' && order.order_type !== 'delivery' && (
+                                <button
+                                  onClick={() => handleStatusChange(order.id, 'processing', 'completed')}
+                                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-zinc-800 text-emerald-400 font-bold"
+                                >
+                                  ✅ تسليم مباشر للعميل
+                                </button>
+                              )}
+
+                              {/* Direct Out for Delivery if Assigned */}
+                              {order.status === 'assigned' && (
+                                <button
+                                  onClick={() => handleDeliveryStatusUpdate(order.id, 'out_for_delivery')}
+                                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-zinc-800 text-purple-300 font-bold"
+                                >
+                                  🚚 خروج مباشر للعميل
+                                </button>
+                              )}
+
+                              {/* Reassign Driver */}
+                              {['ready', 'assigned', 'picked_up'].includes(order.status) && order.order_type === 'delivery' && (
+                                <button
+                                  onClick={() => {
+                                    setSelectedOrderForDriver(order)
+                                    setSelectedDriverId('')
+                                    setOpenDropdownId(null)
+                                  }}
+                                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-zinc-800 text-indigo-300 font-bold"
+                                >
+                                  🛵 {order.assigned_driver ? 'تغيير الطيار' : 'تعيين طيار'}
+                                </button>
+                              )}
+
+                              {/* Failure recording for out_for_delivery */}
+                              {order.status === 'out_for_delivery' && (
+                                <button
+                                  onClick={() => {
+                                    setSelectedOrderForFailure(order)
+                                    setOpenDropdownId(null)
+                                  }}
+                                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-zinc-800 text-rose-400 font-bold"
+                                >
+                                  ⚠️ تسجيل تعذر التوصيل
+                                </button>
+                              )}
+
+                              {/* Cancel Order */}
+                              {['pending', 'processing', 'ready'].includes(order.status) && (
+                                <button
+                                  onClick={() => handleStatusChange(order.id, order.status, 'cancelled')}
+                                  className="w-full text-right px-2.5 py-1.5 rounded-lg hover:bg-red-950 text-red-400 font-bold"
+                                >
+                                  ❌ إلغاء الطلب
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               )
@@ -1119,11 +1209,12 @@ export default function AdminOrdersPage() {
         )}
       </main>
 
+      {/* MODAL 1: Driver Assignment */}
       {selectedOrderForDriver && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-gray-100">
             <div className="flex justify-between items-center">
-              <h3 className="text-base font-extrabold text-gray-900">
+              <h3 className="text-sm font-black text-gray-900">
                 🛵 تعيين طيار للطلب #{selectedOrderForDriver.order_number}
               </h3>
               <button
@@ -1134,40 +1225,29 @@ export default function AdminOrdersPage() {
               </button>
             </div>
 
-            <p className="text-xs text-gray-500 leading-relaxed">
-              اختر طياراً متاحاً ولديه وردية مفتوحة لتكليفه بطلب الدليفري:
+            <p className="text-xs text-gray-500">
+              اختر طياراً متاحاً ولديه وردية مفتوحة لتكليفه بطلب التوصيل:
             </p>
 
             <form onSubmit={handleAssignDriver} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">الطيار المتاح:</label>
                 <select
                   value={selectedDriverId}
                   onChange={(e) => setSelectedDriverId(e.target.value)}
                   required
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-bold bg-gray-50"
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-bold bg-gray-50"
                 >
                   <option value="">-- اختر طياراً متاحاً بالفرع --</option>
-                  {eligibleDrivers.map((d) => {
-                    const count = d.assigned_orders_count || 0
-                    let statusLabel = '🟢 متاح بالفرع (جاهز)'
-                    if (d.status === 'busy') {
-                      statusLabel = `🚚 بالشارع جاري التوصيل (${count} طلبات)`
-                    } else if (count > 0) {
-                      statusLabel = `📦 محمّل بـ ${count} طلبات بالفرع (تجهيز)`
-                    }
-
-                    return (
-                      <option key={d.id} value={d.id}>
-                        {d.name} — {statusLabel}
-                      </option>
-                    )
-                  })}
+                  {eligibleDrivers.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} ({d.status === 'available' ? '🟢 متاح' : '🟡 في رحلة'})
+                    </option>
+                  ))}
                 </select>
 
                 {eligibleDrivers.length === 0 && (
                   <p className="text-red-600 text-[11px] font-semibold mt-1">
-                    ⚠️ لا يوجد طيارون متاحون حالياً لديهم وردية مفتوحة. قم ببدء وردية طيار أولاً من زر إدارة الطيارين.
+                    ⚠️ لا يوجد طيارون متاحون حالياً لديهم وردية مفتوحة.
                   </p>
                 )}
               </div>
@@ -1176,14 +1256,14 @@ export default function AdminOrdersPage() {
                 <button
                   type="button"
                   onClick={() => setSelectedOrderForDriver(null)}
-                  className="px-4 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
                   disabled={!selectedDriverId || updatingOrderId === selectedOrderForDriver.id}
-                  className="px-5 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-white text-xs font-bold transition-all shadow-md shadow-purple-200 disabled:opacity-50"
+                  className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-black shadow-xs disabled:opacity-50"
                 >
                   {updatingOrderId === selectedOrderForDriver.id ? 'جاري التعيين...' : 'تأكيد التعيين ✓'}
                 </button>
@@ -1193,12 +1273,13 @@ export default function AdminOrdersPage() {
         </div>
       )}
 
+      {/* MODAL 2: Record Delivery Failure */}
       {selectedOrderForFailure && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-gray-100">
             <div className="flex justify-between items-center">
-              <h3 className="text-base font-extrabold text-red-700">
-                ⚠️ تسجيل فشل توصيل الطلب #{selectedOrderForFailure.order_number}
+              <h3 className="text-sm font-black text-red-700">
+                ⚠️ تسجيل تعذر توصيل الطلب #{selectedOrderForFailure.order_number}
               </h3>
               <button
                 onClick={() => setSelectedOrderForFailure(null)}
@@ -1208,17 +1289,13 @@ export default function AdminOrdersPage() {
               </button>
             </div>
 
-            <p className="text-xs text-gray-500 leading-relaxed">
-              حدد سبب عدم التوصيل ليتم حفظه صراحة في سوبابيز دون إيقاف باقي طلبات رحلة الطيار:
-            </p>
-
             <form onSubmit={handleConfirmFailure} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">سبب تعذر التوصيل:</label>
                 <select
                   value={failureReason}
                   onChange={(e) => setFailureReason(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-bold bg-gray-50 mb-2"
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-xs font-bold bg-gray-50 mb-2"
                 >
                   <option value="العميل لا يرد على الهاتف">العميل لا يرد على الهاتف</option>
                   <option value="العنوان غير صحيح أو غير واضح">العنوان غير صحيح أو غير واضح</option>
@@ -1234,8 +1311,7 @@ export default function AdminOrdersPage() {
                     value={customFailureText}
                     onChange={(e) => setCustomFailureText(e.target.value)}
                     required
-                    autoFocus
-                    className="w-full px-4 py-3 border border-red-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-xs font-bold bg-white"
+                    className="w-full px-3.5 py-2.5 border border-red-300 rounded-xl text-xs font-bold bg-white"
                   />
                 )}
               </div>
@@ -1243,23 +1319,17 @@ export default function AdminOrdersPage() {
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setSelectedOrderForFailure(null)
-                    setCustomFailureText('')
-                  }}
-                  className="px-4 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
+                  onClick={() => setSelectedOrderForFailure(null)}
+                  className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  disabled={
-                    updatingOrderId === selectedOrderForFailure.id ||
-                    (failureReason === 'سبب آخر' && !customFailureText.trim())
-                  }
-                  className="px-5 py-2.5 rounded-xl bg-red-700 hover:bg-red-800 text-white text-xs font-bold transition-all shadow-md shadow-red-200 disabled:opacity-50"
+                  disabled={updatingOrderId === selectedOrderForFailure.id}
+                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black shadow-xs disabled:opacity-50"
                 >
-                  {updatingOrderId === selectedOrderForFailure.id ? 'جاري الحفظ...' : 'تأكيد تسجيل الفشل ✓'}
+                  {updatingOrderId === selectedOrderForFailure.id ? 'جاري الحفظ...' : 'تأكيد الحفظ ✓'}
                 </button>
               </div>
             </form>
@@ -1267,13 +1337,13 @@ export default function AdminOrdersPage() {
         </div>
       )}
 
-      {/* Manual Order Entry Modal for Cashier */}
+      {/* MODAL 3: Manual Order Entry Modal */}
       <ManualOrderModal
         isOpen={showManualOrderModal}
         onClose={() => setShowManualOrderModal(false)}
         onSuccess={(msg) => {
           setActionSuccess(msg)
-          fetchOrdersAndDrivers(activeTab, true)
+          loadOrdersBoardData(true)
         }}
         dailyShiftNumber={dailyShift?.shift_number}
         openedBy={dailyShift?.opened_by}

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { cookies } from 'next/headers'
-import { ADMIN_COOKIE_NAME } from '../login/route'
+import { getStaffSession, canStaffManageSettings } from '@/lib/staffAuth'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,12 +34,20 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const cookieStore = await cookies()
-    const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME)
+    const supabaseServer = getSupabaseServerClient()
+    const { staff, error: authErr, status: authStatus } = await getStaffSession(supabaseServer, cookieStore)
 
-    if (!sessionCookie || !sessionCookie.value.startsWith('staff_auth_')) {
+    if (authErr || !staff) {
       return NextResponse.json(
-        { error: 'غير مصرح الوصول. يرجى تسجيل الدخول كمسؤول.' },
-        { status: 401 }
+        { error: authErr || 'غير مصرح بالوصول. يرجى تسجيل الدخول كمسؤول.' },
+        { status: authStatus || 401 }
+      )
+    }
+
+    if (!canStaffManageSettings(staff.role)) {
+      return NextResponse.json(
+        { error: 'غير مصرح لك بتعديل سياسات وإعدادات المطعم. هذه العملية مقتصرة على المدير والمالك فقط.' },
+        { status: 403 }
       )
     }
 
@@ -49,7 +57,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'البيانات غير مكتملة' }, { status: 400 })
     }
 
-    const supabaseServer = getSupabaseServerClient()
     const { error } = await supabaseServer
       .from('restaurant_policies')
       .upsert({

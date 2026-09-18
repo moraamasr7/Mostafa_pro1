@@ -11,9 +11,14 @@ export interface StaffSessionUser {
 }
 
 export const AUTHORIZED_SHIFT_CLOSE_ROLES = ['owner', 'manager', 'cashier']
+export const AUTHORIZED_SETTINGS_ROLES = ['owner', 'manager']
 
 export function canStaffCloseShift(role: string): boolean {
   return AUTHORIZED_SHIFT_CLOSE_ROLES.includes(role?.toLowerCase().trim())
+}
+
+export function canStaffManageSettings(role?: string): boolean {
+  return AUTHORIZED_SETTINGS_ROLES.includes(role?.toLowerCase().trim() || '')
 }
 
 export async function getStaffSession(

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { isRestaurantOpen } from '@/lib/schedule'
-import { ADMIN_COOKIE_NAME } from '../login/route'
+import { getStaffSession, canStaffManageSettings } from '@/lib/staffAuth'
 
 export const dynamic = 'force-dynamic'
 
@@ -44,19 +44,25 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const cookieStore = await cookies()
-    const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME)
+    const serverSupabase = getSupabaseServerClient()
+    const { staff, error: authErr, status: authStatus } = await getStaffSession(serverSupabase, cookieStore)
 
-    if (!sessionCookie || !sessionCookie.value.startsWith('staff_auth_')) {
+    if (authErr || !staff) {
       return NextResponse.json(
-        { error: 'غير مصرح الوصول. يرجى تسجيل الدخول بكود الإدارة.' },
-        { status: 401 }
+        { error: authErr || 'غير مصرح الوصول. يرجى تسجيل الدخول بكود الإدارة.' },
+        { status: authStatus || 401 }
+      )
+    }
+
+    if (!canStaffManageSettings(staff.role)) {
+      return NextResponse.json(
+        { error: 'غير مصرح لك بتعديل مواعيد العمل والتشغيل. هذه العملية مقتصرة على المدير والمالك فقط.' },
+        { status: 403 }
       )
     }
 
     const body = await request.json()
     const { action } = body
-    const serverSupabase = getSupabaseServerClient()
-
     if (action === 'update_weekly') {
       const { hours } = body
       if (!Array.isArray(hours)) {

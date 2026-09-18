@@ -5,16 +5,13 @@ export interface TelegramSendResult {
   error?: string
 }
 
-const DEFAULT_BOT_TOKEN = '8838184657:AAE-ab3FEgwinx2My5Shdx90vzlbpgPwwTo'
-const DEFAULT_CHAT_ID = '8658748027'
-
 export async function sendTelegramMessage(text: string): Promise<TelegramSendResult> {
-  const token = (process.env.TELEGRAM_BOT_TOKEN || DEFAULT_BOT_TOKEN).trim()
-  const chatId = (process.env.TELEGRAM_CHAT_ID || DEFAULT_CHAT_ID).trim()
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim()
+  const chatId = process.env.TELEGRAM_CHAT_ID?.trim()
 
   if (!token || !chatId) {
-    console.warn('Telegram notifications skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing')
-    return { success: false, error: 'Telegram credentials missing' }
+    console.warn('Telegram notifications skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing in environment variables')
+    return { success: false, error: 'Telegram credentials missing in environment variables' }
   }
 
   try {

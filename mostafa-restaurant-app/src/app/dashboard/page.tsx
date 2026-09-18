@@ -1,30 +1,75 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import OpsNavbar from '@/components/OpsNavbar'
+import GlobalShiftBar from '@/components/GlobalShiftBar'
 import Link from 'next/link'
 import { playAlertSound } from '@/lib/audioAlert'
 
-interface DashboardStats {
-  activeOrders: number
-  pendingOrders: number
-  processingOrders: number
-  readyOrders: number
-  deliveryActive: number
-  completedToday: number
-  totalRevenueToday: number
-  totalDriversCount: number
-  activeDriversCount: number
+interface CurrentStaffInfo {
+  id: string
+  full_name: string
+  role: string
 }
 
-interface ClosureAuditResult {
-  hasActiveShift: boolean
-  canClose: boolean
-  issues: string[]
-  unresolvedOrdersCount: number
-  activeDriversInTripsCount: number
-  pendingCollectedAmount: number
+interface ActiveShiftData {
+  id: string
+  shift_number: number
+  opened_by: string
+  opened_at: string
+  totalSales: number
+  cashSales: number
+  systemExpectedCash: number
+  driverCustodyCash: number
+  uncollectedCash?: number
+  fleetAccounting?: {
+    driversCount: number
+    totalDeliveredOrders: number
+    totalNetPayout: number
+  } | null
+}
+
+interface OrderItemSummary {
+  id: string
+  order_number: number
+  customer_name: string
+  customer_phone?: string
+  order_type: 'takeaway' | 'delivery' | 'dine_in'
+  status: 'pending' | 'processing' | 'ready' | 'assigned' | 'picked_up' | 'out_for_delivery' | 'delivered' | 'completed' | 'cancelled' | 'failed'
+  total_amount: number
+  created_at: string
+  daily_shift_id?: string
+  driver_name?: string
+}
+
+interface DriverSnapshotItem {
+  id: string
+  name: string
+  status: 'offline' | 'available' | 'busy'
+  active_shift_id?: string | null
+  current_trip_number?: number | null
+}
+
+interface DeliveryTripSnapshot {
+  id: string
+  trip_number: number
+  driver_name: string
+  status: string
+  expected_amount: number
+  collected_amount: number
+  order_count: number
+}
+
+interface NeedsAttentionItem {
+  id: string
+  type: 'urgent' | 'warning' | 'info'
+  category: 'pending_order' | 'unassigned_ready' | 'driver_custody' | 'shift_blocker' | 'open_trip'
+  title: string
+  description: string
+  actionLabel: string
+  actionHref: string
+  count?: number
 }
 
 interface LiveAlert {
@@ -35,29 +80,168 @@ interface LiveAlert {
   type: 'urgent' | 'warning' | 'info' | 'success'
 }
 
-export default function DashboardPage() {
-  const [stats, setStats] = useState<DashboardStats>({
-    activeOrders: 0,
-    pendingOrders: 0,
-    processingOrders: 0,
-    readyOrders: 0,
-    deliveryActive: 0,
-    completedToday: 0,
-    totalRevenueToday: 0,
-    totalDriversCount: 0,
-    activeDriversCount: 0,
-  })
+const ROLE_LABELS: Record<string, string> = {
+  owner: 'مالك المطعم',
+  manager: 'مشرف / مدير',
+  cashier: 'كاشير',
+  kitchen: 'شيف / مطبخ',
+  driver: 'طيار',
+}
 
-  const [closureAudit, setClosureAudit] = useState<ClosureAuditResult | null>(null)
+const ORDER_STATUS_LABELS: Record<string, { label: string; badgeClass: string }> = {
+  pending: { label: 'طلب جديد ⏳', badgeClass: 'bg-amber-100 text-amber-900 border-amber-300' },
+  processing: { label: 'قيد التحضير 🍳', badgeClass: 'bg-blue-100 text-blue-900 border-blue-300' },
+  ready: { label: 'جاهز للاستلام/التوصيل 📦', badgeClass: 'bg-purple-100 text-purple-900 border-purple-300' },
+  assigned: { label: 'تم الإسناد للطيار 🛵', badgeClass: 'bg-indigo-100 text-indigo-900 border-indigo-300' },
+  picked_up: { label: 'استلمه الطيار 🛵', badgeClass: 'bg-indigo-100 text-indigo-900 border-indigo-300' },
+  out_for_delivery: { label: 'في الطريق للعميل 🚀', badgeClass: 'bg-teal-100 text-teal-900 border-teal-300' },
+  delivered: { label: 'تم التوصيل ✅', badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-300' },
+  completed: { label: 'مكتمل ✅', badgeClass: 'bg-emerald-100 text-emerald-900 border-emerald-300' },
+  cancelled: { label: 'ملغي ❌', badgeClass: 'bg-rose-100 text-rose-900 border-rose-300' },
+  failed: { label: 'تعذر التسليم ⚠️', badgeClass: 'bg-rose-100 text-rose-900 border-rose-300' },
+}
+
+export default function DashboardCommandCenterPage() {
   const [loading, setLoading] = useState(true)
-  const [isAuditing, setIsAuditing] = useState(false)
+  const [activeShift, setActiveShift] = useState<ActiveShiftData | null>(null)
+  const [currentStaff, setCurrentStaff] = useState<CurrentStaffInfo | null>(null)
   const [soundEnabled, setSoundEnabled] = useState(true)
+  const [isSendingReport, setIsSendingReport] = useState(false)
+
+  // Operational Lists
+  const [orders, setOrders] = useState<OrderItemSummary[]>([])
+  const [drivers, setDrivers] = useState<DriverSnapshotItem[]>([])
+  const [trips, setTrips] = useState<DeliveryTripSnapshot[]>([])
+
+  // Live Alerts & Toasts
   const [liveAlerts, setLiveAlerts] = useState<LiveAlert[]>([])
   const [activeToast, setActiveToast] = useState<LiveAlert | null>(null)
-  const [activeShift, setActiveShift] = useState<{ id: string; totalSales?: number; driverCustodyCash?: number } | null>(null)
-  const [currentStaff, setCurrentStaff] = useState<{ id: string; full_name: string; role: string } | null>(null)
-  const [isSendingReport, setIsSendingReport] = useState(false)
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+
+  const triggerAlert = useCallback(
+    (alert: Omit<LiveAlert, 'id' | 'time'>) => {
+      const newAlert: LiveAlert = {
+        ...alert,
+        id: Math.random().toString(36).substring(2, 9),
+        time: new Date().toLocaleTimeString('ar-EG', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        }),
+      }
+
+      setLiveAlerts((prev) => [newAlert, ...prev.slice(0, 19)])
+      setActiveToast(newAlert)
+
+      if (soundEnabled) {
+        playAlertSound(alert.type)
+      }
+
+      if (toastTimeoutRef.current) {
+        clearTimeout(toastTimeoutRef.current)
+      }
+      toastTimeoutRef.current = setTimeout(() => {
+        setActiveToast(null)
+      }, 6000)
+    },
+    [soundEnabled]
+  )
+
+  const fetchCommandCenterData = useCallback(async () => {
+    try {
+      const [ordersRes, driversRes, tripsRes, dailyShiftRes] = await Promise.all([
+        fetch('/api/admin/orders?status=all'),
+        fetch('/api/admin/drivers'),
+        fetch('/api/admin/trips'),
+        fetch('/api/admin/daily-shift'),
+      ])
+
+      const ordersData = await ordersRes.json()
+      const driversData = await driversRes.json()
+      const tripsData = await tripsRes.json()
+      const dailyShiftData = await dailyShiftRes.json()
+
+      const fetchedOrders: OrderItemSummary[] = ordersData.orders || []
+      const fetchedDrivers: DriverSnapshotItem[] = driversData.drivers || []
+      const fetchedTrips: DeliveryTripSnapshot[] = tripsData.trips || []
+
+      setOrders(fetchedOrders)
+      setDrivers(fetchedDrivers)
+      setTrips(fetchedTrips)
+
+      if (dailyShiftData.currentStaff) {
+        setCurrentStaff(dailyShiftData.currentStaff)
+      }
+
+      if (dailyShiftData.hasActiveShift && dailyShiftData.activeShift) {
+        setActiveShift(dailyShiftData.activeShift)
+      } else {
+        setActiveShift(null)
+      }
+    } catch (err) {
+      console.error('Error loading command center data:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchCommandCenterData()
+
+    const channel = supabase
+      .channel('command-center-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload: any) => {
+        fetchCommandCenterData()
+
+        if (payload.eventType === 'INSERT') {
+          const orderNum = payload.new?.order_number || ''
+          const customer = payload.new?.customer_name || 'عميل'
+          const amount = payload.new?.total_amount || 0
+          triggerAlert({
+            title: '🔥 طلب جديد ورد للتو',
+            message: `طلب جديد #${orderNum} - ${customer} (${amount} ج.م)`,
+            type: 'success',
+          })
+        } else if (payload.eventType === 'UPDATE') {
+          const newStatus = payload.new?.status
+          const oldStatus = payload.old?.status
+          const orderNum = payload.new?.order_number || ''
+          const customer = payload.new?.customer_name || 'عميل'
+
+          if (newStatus === 'cancelled' && oldStatus !== 'cancelled') {
+            triggerAlert({
+              title: '❌ إلغاء طلب فوري',
+              message: `تم إلغاء الطلب #${orderNum} للعميل ${customer}`,
+              type: 'urgent',
+            })
+          } else if (newStatus === 'failed' && oldStatus !== 'failed') {
+            triggerAlert({
+              title: '⚠️ تعذر تسليم طلب',
+              message: `تعذر توصيل الطلب #${orderNum} للعميل ${customer}`,
+              type: 'warning',
+            })
+          }
+        }
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
+        fetchCommandCenterData()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_trips' }, () => {
+        fetchCommandCenterData()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, () => {
+        fetchCommandCenterData()
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shift_expenses' }, () => {
+        fetchCommandCenterData()
+      })
+      .subscribe()
+
+    return () => {
+      supabase.removeChannel(channel)
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
+    }
+  }, [fetchCommandCenterData, triggerAlert])
 
   const handleSendTelegramReport = async () => {
     setIsSendingReport(true)
@@ -81,214 +265,123 @@ export default function DashboardPage() {
     }
   }
 
-  const triggerAlert = (alert: Omit<LiveAlert, 'id' | 'time'>) => {
-    const newAlert: LiveAlert = {
-      ...alert,
-      id: Math.random().toString(36).substring(2, 9),
-      time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    }
+  // ==========================================
+  // 5 CORE OPERATIONAL COMMAND KPIS
+  // ==========================================
+  const activeOrdersCount = orders.filter((o) =>
+    ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+  ).length
 
-    setLiveAlerts((prev) => [newAlert, ...prev.slice(0, 24)])
-    setActiveToast(newAlert)
+  const kitchenProcessingCount = orders.filter((o) => o.status === 'processing').length
 
-    if (soundEnabled) {
-      playAlertSound(alert.type)
-    }
+  const outForDeliveryCount = orders.filter((o) =>
+    ['assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+  ).length
 
-    if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current)
-    }
-    toastTimeoutRef.current = setTimeout(() => {
-      setActiveToast(null)
-    }, 6000)
+  // SSoT: Shift Sales come strictly from backend accounting engine
+  const canonicalShiftSales = activeShift ? Number(activeShift.totalSales || 0) : 0
+
+  // ==========================================
+  // NEEDS ATTENTION BOTTLENECK AUDIT (See -> Understand)
+  // ==========================================
+  const needsAttentionList: NeedsAttentionItem[] = []
+
+  // 1. Pending Orders Awaiting Acceptance
+  const pendingOrders = orders.filter((o) => o.status === 'pending')
+  if (pendingOrders.length > 0) {
+    needsAttentionList.push({
+      id: 'pending_orders',
+      type: 'urgent',
+      category: 'pending_order',
+      title: `${pendingOrders.length} طلب جديد بحاجة للتأكيد والدخول للمطبخ`,
+      description: `طلبات جديدة بالانتظار (أرقام: ${pendingOrders.slice(0, 4).map((o) => '#' + o.order_number).join(', ')})`,
+      actionLabel: 'فتح الطلبات وتأكيدها ⬅️',
+      actionHref: '/orders?status=pending',
+      count: pendingOrders.length,
+    })
   }
 
-  const fetchDashboardData = async () => {
-    setLoading(true)
-    try {
-      const [ordersRes, driversRes, tripsRes, dailyShiftRes] = await Promise.all([
-        fetch('/api/admin/orders?status=all'),
-        fetch('/api/admin/drivers'),
-        fetch('/api/admin/trips'),
-        fetch('/api/admin/daily-shift'),
-      ])
-
-      const ordersData = await ordersRes.json()
-      const driversData = await driversRes.json()
-      const tripsData = await tripsRes.json()
-      const dailyShiftData = await dailyShiftRes.json()
-
-      const allOrders: any[] = ordersData.orders || []
-      const allDrivers: any[] = driversData.drivers || []
-      const allTrips: any[] = tripsData.trips || []
-      const currentShift = dailyShiftData.hasActiveShift ? dailyShiftData.activeShift : null
-      setActiveShift(currentShift)
-      if (dailyShiftData.currentStaff) {
-        setCurrentStaff(dailyShiftData.currentStaff)
-      }
-
-      let pending = 0
-      let processing = 0
-      let ready = 0
-      let deliveryActive = 0
-      let completedShiftOrders = 0
-
-      for (const o of allOrders) {
-        if (o.status === 'pending') pending++
-        else if (o.status === 'processing') processing++
-        else if (o.status === 'ready') ready++
-        else if (['assigned', 'picked_up', 'out_for_delivery'].includes(o.status)) deliveryActive++
-
-        // Ownership strictly tied to current daily_shift_id
-        if ((o.status === 'completed' || o.status === 'delivered') && currentShift && o.daily_shift_id === currentShift.id) {
-          completedShiftOrders++
-        }
-      }
-
-      const activeDrivers = allDrivers.filter((d: any) => d.status === 'available' || d.status === 'busy' || d.active_shift_id)
-
-      setStats({
-        activeOrders: pending + processing + ready + deliveryActive,
-        pendingOrders: pending,
-        processingOrders: processing,
-        readyOrders: ready,
-        deliveryActive,
-        completedToday: completedShiftOrders,
-        totalRevenueToday: currentShift ? Number(currentShift.totalSales || 0) : 0,
-        totalDriversCount: allDrivers.length,
-        activeDriversCount: activeDrivers.length,
-      })
-
-      // Run automatic readiness audit
-      const issues: string[] = []
-
-      if (!currentShift) {
-        setClosureAudit({
-          hasActiveShift: false,
-          canClose: false,
-          issues: ['لا توجد وردية مفتوحة حالياً — يجب فتح وردية أولاً.'],
-          unresolvedOrdersCount: 0,
-          activeDriversInTripsCount: 0,
-          pendingCollectedAmount: 0,
-        })
-      } else {
-        const openOrders = allOrders.filter((o: any) =>
-          ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
-        )
-
-        if (openOrders.length > 0) {
-          issues.push(`يوجد ${openOrders.length} طلب مفتوح لم يُحسم بعد (بين معلق، تجهيز، أو دليفري).`)
-        }
-
-        const activeTrips = allTrips.filter((t: any) => t.status !== 'completed' && t.status !== 'cancelled')
-        if (activeTrips.length > 0) {
-          issues.push(`يوجد ${activeTrips.length} رحلة دليفري نشطة في الميدان لم تُغلق.`)
-        }
-
-        const activeDriverShifts = allDrivers.filter((d: any) => d.active_shift_id || d.status === 'available' || d.status === 'busy')
-        if (activeDriverShifts.length > 0) {
-          issues.push(`يوجد ${activeDriverShifts.length} طيار في حالة دوام نشط — يجب إنهاء ورديات الطيارين أولاً.`)
-        }
-
-        const driverCustodyAmount = Number(currentShift.driverCustodyCash || 0)
-        if (driverCustodyAmount > 0) {
-          issues.push(`توجد عهدة كاش معلقة مع الطيارين بقيمة ${driverCustodyAmount} ج.م.`)
-        }
-
-        setClosureAudit({
-          hasActiveShift: true,
-          canClose: issues.length === 0,
-          issues,
-          unresolvedOrdersCount: openOrders.length,
-          activeDriversInTripsCount: activeTrips.length,
-          pendingCollectedAmount: driverCustodyAmount,
-        })
-      }
-    } catch (err) {
-      console.error('Error loading dashboard data:', err)
-    } finally {
-      setLoading(false)
-    }
+  // 2. Ready Delivery Orders Unassigned to Drivers
+  const unassignedReadyDelivery = orders.filter(
+    (o) => o.status === 'ready' && o.order_type === 'delivery' && !o.driver_name
+  )
+  if (unassignedReadyDelivery.length > 0) {
+    needsAttentionList.push({
+      id: 'unassigned_ready',
+      type: 'warning',
+      category: 'unassigned_ready',
+      title: `${unassignedReadyDelivery.length} طلب دليفري جاهز بالمطبخ بدون طيار`,
+      description: 'أصناف جاهزة ساخنة بانتظار إسناد وتوجيه طيار لاستلامها',
+      actionLabel: 'إسناد لطيار فوراً 🛵',
+      actionHref: '/assignments',
+      count: unassignedReadyDelivery.length,
+    })
   }
 
-  useEffect(() => {
-    fetchDashboardData()
+  // 3. Driver Custody Pending Settlement
+  const pendingCustodyCash = activeShift ? Number(activeShift.driverCustodyCash || 0) : 0
+  if (pendingCustodyCash > 0) {
+    needsAttentionList.push({
+      id: 'driver_custody',
+      type: 'warning',
+      category: 'driver_custody',
+      title: `عهدة كاش معلقة مع الطيارين بقيمة ${pendingCustodyCash.toLocaleString()} ج.م`,
+      description: 'مبالغ نقدية لرحلات مكتملة بانتظار التوريد والتصفية داخل الخزينة',
+      actionLabel: 'تسوية عهدة الطيارين 💰',
+      actionHref: '/drivers',
+    })
+  }
 
-    // Subscriptions to all operational tables with instant alerts
-    const channel = supabase
-      .channel('dashboard-realtime-enhanced')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload: any) => {
-        fetchDashboardData()
+  // 4. Open Delivery Trips in Field
+  const activeTrips = trips.filter((t) => t.status !== 'completed' && t.status !== 'cancelled')
+  if (activeTrips.length > 0) {
+    needsAttentionList.push({
+      id: 'active_trips',
+      type: 'info',
+      category: 'open_trip',
+      title: `${activeTrips.length} رحلة دليفري نشطة في الميدان حالياً`,
+      description: 'طيارين في خطوط السير لتوصيل الطلبات للعملاء',
+      actionLabel: 'متابعة خطوط السير 🗺️',
+      actionHref: '/drivers',
+      count: activeTrips.length,
+    })
+  }
 
-        if (payload.eventType === 'UPDATE') {
-          const newStatus = payload.new?.status
-          const oldStatus = payload.old?.status
-          const orderNum = payload.new?.order_number || ''
-          const customer = payload.new?.customer_name || 'عميل'
-          const amount = payload.new?.total_amount || 0
+  // 5. Shift Required Gatekeeper
+  if (!activeShift) {
+    needsAttentionList.unshift({
+      id: 'no_shift',
+      type: 'urgent',
+      category: 'shift_blocker',
+      title: 'الوردية التشغيلية مغلقة — العمليات والطلبات مقيدة',
+      description: 'يجب فتح وردية جديدة وتثبيت العهدة الافتتاحية للمباشرة',
+      actionLabel: 'فتح وردية الآن 🔓',
+      actionHref: '/shift-control',
+    })
+  }
 
-          if (newStatus === 'cancelled' && oldStatus !== 'cancelled') {
-            triggerAlert({
-              title: '❌ إلغاء طلب فوري',
-              message: `تم إلغاء الطلب #${orderNum} الخاص بالعميل ${customer} بقيمة ${amount} ج.م`,
-              type: 'urgent',
-            })
-          } else if (newStatus === 'failed' && oldStatus !== 'failed') {
-            triggerAlert({
-              title: '⚠️ تعذر تسليم طلب (فشل)',
-              message: `تعذر توصيل الطلب #${orderNum} للعميل ${customer}`,
-              type: 'warning',
-            })
-          }
-        } else if (payload.eventType === 'INSERT') {
-          const orderNum = payload.new?.order_number || ''
-          const customer = payload.new?.customer_name || 'عميل'
-          const amount = payload.new?.total_amount || 0
-          triggerAlert({
-            title: '🔥 طلب جديد ورد للتو',
-            message: `طلب جديد #${orderNum} - العميل: ${customer} (${amount} ج.م)`,
-            type: 'success',
-          })
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'driver_shifts' }, (payload: any) => {
-        fetchDashboardData()
+  const needsAttentionCount = needsAttentionList.length
 
-        if (payload.eventType === 'INSERT' && payload.new?.status === 'open') {
-          triggerAlert({
-            title: '🛵 فتح شيفت طيار جديد',
-            message: 'قام طيار ببدء شفته الميداني وجاهز الآن للاستلام',
-            type: 'info',
-          })
-        } else if (payload.eventType === 'UPDATE' && payload.new?.status === 'closed') {
-          triggerAlert({
-            title: '🏁 إغلاق وإنهاء شيفت طيار',
-            message: 'تم إنهاء وتصفية شيفت الطيار بنجاح',
-            type: 'info',
-          })
-        }
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers' }, () => {
-        fetchDashboardData()
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'delivery_trips' }, () => {
-        fetchDashboardData()
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_shifts' }, () => {
-        fetchDashboardData()
-      })
-      .subscribe()
+  // Top Active Orders Requiring Attention
+  const activeUrgentOrders = orders
+    .filter((o) => ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status))
+    .slice(0, 6)
 
-    return () => {
-      supabase.removeChannel(channel)
-      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [soundEnabled])
+  // Driver Fleet Snapshot
+  const availableDriversCount = drivers.filter((d) => d.status === 'available').length
+  const busyDriversCount = drivers.filter((d) => d.status === 'busy').length
+  const activeDriversCount = drivers.filter((d) => d.status === 'available' || d.status === 'busy' || d.active_shift_id).length
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900 flex flex-col font-sans relative">
-      <OpsNavbar title="لوحة التحكم والعمليات" subtitle="نظرة شاملة لمؤشرات المطعم وفحص جاهزية إغلاق الوردية" />
+    <div className="min-h-screen bg-zinc-900/10 bg-gradient-to-b from-zinc-100 to-gray-100 text-gray-900 flex flex-col font-sans relative pb-20 md:pb-6">
+      {/* Global Operations Navbar */}
+      <OpsNavbar
+        title="مركز العمليات والقيادة (Command Center)"
+        subtitle="نظرة تشغيلية فورية: المتابعة والتدخل والإجراء السريع"
+      />
+
+      {/* Global Shift Bar (SSoT Shift Context) */}
+      <GlobalShiftBar />
 
       {/* Realtime Floating Toast Notification */}
       {activeToast && (
@@ -319,9 +412,6 @@ export default function DashboardPage() {
                 <span className="text-[10px] opacity-75 font-mono">{activeToast.time}</span>
               </div>
               <p className="text-xs font-semibold mt-1 opacity-90 leading-relaxed">{activeToast.message}</p>
-              <div className="mt-2 text-[10px] font-bold text-amber-300 flex items-center gap-1">
-                <span>⚡ تم إرسال تنبيه فوري عبر تليجرام</span>
-              </div>
             </div>
             <button
               onClick={() => setActiveToast(null)}
@@ -333,316 +423,485 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <main className="max-w-7xl mx-auto px-4 py-8 flex-1 w-full space-y-8">
-        {/* Realtime Status Bar */}
-        <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm flex flex-wrap items-center justify-between gap-4">
+      <main className="max-w-7xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
+        {/* Header Bar: Status Controls & Live Connectivity */}
+        <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-200 shadow-xs">
           <div className="flex items-center gap-3">
-            <span className="relative flex h-3.5 w-3.5">
+            <span className="relative flex h-3 w-3">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
             </span>
             <div>
-              <p className="text-xs font-black text-gray-800 flex items-center gap-2">
-                <span>النظام متصل لحظياً (Supabase Realtime + تليجرام بوت)</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black text-gray-800">مركز القيادة اللحظي</span>
                 <span className="bg-emerald-100 text-emerald-800 text-[10px] px-2 py-0.5 rounded-full font-bold">
-                  مباشر ⚡
+                  متصل ومباشر ⚡
                 </span>
-              </p>
+              </div>
               <p className="text-[11px] text-gray-500 font-medium">
-                أي إلغاء أو فشل طلب، أو فتح/إغلاق شيفت طيار ينعكس هنا وفي تليجرام تلقائياً في نفس الثانية
+                تحديث أوتوماتيكي لكافة الحركات التشغيلية والطلبات
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             {currentStaff && (
-              <div className="flex items-center gap-2 bg-amber-50/90 border border-amber-300 px-3 py-1.5 rounded-xl text-xs shadow-xs">
-                <span className="font-black text-amber-950 flex items-center gap-1.5">
-                  <span>👤</span>
-                  <span>{currentStaff.full_name}</span>
-                </span>
-                <span className="bg-amber-200/70 text-amber-900 font-bold px-2 py-0.5 rounded-md text-[11px]">
-                  {currentStaff.role === 'owner' ? 'مالك المطعم' : currentStaff.role === 'manager' ? 'مشرف / مدير' : currentStaff.role === 'cashier' ? 'كاشير' : currentStaff.role === 'kitchen' ? 'شيف / مطبخ' : currentStaff.role}
+              <div className="hidden sm:flex items-center gap-2 bg-zinc-50 border border-zinc-200 px-3 py-1.5 rounded-xl text-xs">
+                <span className="font-bold text-gray-800">👤 {currentStaff.full_name}</span>
+                <span className="bg-zinc-200 text-zinc-700 font-bold px-1.5 py-0.5 rounded text-[10px]">
+                  {ROLE_LABELS[currentStaff.role] || currentStaff.role}
                 </span>
               </div>
             )}
+
             <button
               onClick={() => {
                 setSoundEnabled(!soundEnabled)
                 if (!soundEnabled) playAlertSound('info')
               }}
-              className={`text-xs font-black px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 ${
+              className={`text-xs font-bold px-3 py-1.5 rounded-xl border transition-all flex items-center gap-1.5 ${
                 soundEnabled
                   ? 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
                   : 'bg-gray-100 text-gray-500 border-gray-200 hover:bg-gray-200'
               }`}
             >
-              <span>{soundEnabled ? '🔊 التنبيه الصوتي مفعّل' : '🔇 كتم التنبيه الصوتي'}</span>
+              <span>{soundEnabled ? '🔊 التنبيه مفعل' : '🔇 مكتوم'}</span>
             </button>
+
             <button
-              onClick={fetchDashboardData}
+              onClick={fetchCommandCenterData}
               disabled={loading}
-              className="text-xs font-bold bg-gray-100 hover:bg-gray-200 text-gray-800 px-3 py-1.5 rounded-xl transition-all"
+              className="text-xs font-bold bg-zinc-100 hover:bg-zinc-200 text-zinc-800 px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
             >
-              🔄 تحديث يدوي
+              <span>🔄</span>
+              <span className="hidden sm:inline">تحديث</span>
             </button>
           </div>
         </div>
 
-        {/* KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center text-2xl font-black shrink-0">
-              ⚡
+        {/* ========================================== */}
+        {/* SECTION B: 5 CORE OPERATIONAL COMMAND KPIS */}
+        {/* ========================================== */}
+        <section aria-label="مؤشرات القيادة والتشغيل" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+          {/* KPI 1: Active Orders */}
+          <div className="bg-white p-4 sm:p-5 rounded-3xl border border-gray-200 shadow-xs hover:border-amber-400 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-500">الطلبات النشطة</span>
+              <span className="w-8 h-8 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center text-sm font-bold">
+                ⚡
+              </span>
             </div>
-            <div>
-              <p className="text-xs font-bold text-gray-500">الطلبات النشطة الآن</p>
-              <h3 className="text-3xl font-black text-gray-900 mt-0.5">{stats.activeOrders}</h3>
-              <p className="text-[11px] text-amber-700 font-semibold mt-1">
-                {stats.pendingOrders} جديد • {stats.processingOrders} مطبخ • {stats.deliveryActive} دليفري
-              </p>
-            </div>
+            <h3 className="text-2xl sm:text-3xl font-black text-gray-900 mt-2">{activeOrdersCount}</h3>
+            <p className="text-[11px] text-amber-700 font-semibold mt-1">
+              {pendingOrders.length} جديد • {kitchenProcessingCount} مطبخ
+            </p>
           </div>
 
-          <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-2xl font-black shrink-0">
-              ✅
+          {/* KPI 2: Kitchen / Processing */}
+          <div className="bg-white p-4 sm:p-5 rounded-3xl border border-gray-200 shadow-xs hover:border-blue-400 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-500">في المطبخ (تحضير)</span>
+              <span className="w-8 h-8 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center text-sm font-bold">
+                🍳
+              </span>
             </div>
-            <div>
-              <p className="text-xs font-bold text-gray-500">طلبات اكتملت اليوم</p>
-              <h3 className="text-3xl font-black text-gray-900 mt-0.5">{stats.completedToday}</h3>
-              <p className="text-[11px] text-emerald-700 font-semibold mt-1">
-                تسليم ناجح للعملاء
-              </p>
-            </div>
+            <h3 className="text-2xl sm:text-3xl font-black text-gray-900 mt-2">{kitchenProcessingCount}</h3>
+            <p className="text-[11px] text-blue-700 font-semibold mt-1">
+              أصناف قيد التجهيز
+            </p>
           </div>
 
-          <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-blue-100 text-blue-700 flex items-center justify-center text-2xl font-black shrink-0">
-              💰
+          {/* KPI 3: Out for Delivery */}
+          <div className="bg-white p-4 sm:p-5 rounded-3xl border border-gray-200 shadow-xs hover:border-teal-400 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-500">مع الطيارين (توصيل)</span>
+              <span className="w-8 h-8 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center text-sm font-bold">
+                🛵
+              </span>
             </div>
-            <div>
-              <p className="text-xs font-bold text-gray-500">إجمالي مبيعات اليوم</p>
-              <h3 className="text-2xl font-black text-gray-900 mt-0.5">
-                {stats.totalRevenueToday.toLocaleString()} <span className="text-xs font-bold">ج.م</span>
-              </h3>
-              <p className="text-[11px] text-blue-700 font-semibold mt-1">
-                محصل نقدياً واستلام
-              </p>
-            </div>
+            <h3 className="text-2xl sm:text-3xl font-black text-gray-900 mt-2">{outForDeliveryCount}</h3>
+            <p className="text-[11px] text-teal-700 font-semibold mt-1">
+              {activeTrips.length} رحلة ميدانية نشطة
+            </p>
           </div>
 
-          <div className="bg-white p-5 rounded-3xl border border-gray-200 shadow-sm flex items-center gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-purple-100 text-purple-700 flex items-center justify-center text-2xl font-black shrink-0">
-              🛵
+          {/* KPI 4: Shift Sales (Canonical SSoT) */}
+          <div className="bg-white p-4 sm:p-5 rounded-3xl border border-gray-200 shadow-xs hover:border-emerald-400 transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-500">مبيعات الوردية</span>
+              <span className="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center text-sm font-bold">
+                💰
+              </span>
             </div>
-            <div>
-              <p className="text-xs font-bold text-gray-500">الطيارين في الوردية</p>
-              <h3 className="text-3xl font-black text-gray-900 mt-0.5">
-                {stats.activeDriversCount} <span className="text-sm text-gray-400 font-bold">/ {stats.totalDriversCount}</span>
-              </h3>
-              <p className="text-[11px] text-purple-700 font-semibold mt-1">
-                طيارين نشطين بالفرع والميدان
-              </p>
-            </div>
+            <h3 className="text-xl sm:text-2xl font-black text-emerald-700 mt-2 tabular-nums">
+              {canonicalShiftSales.toLocaleString()} <span className="text-xs font-bold">ج.م</span>
+            </h3>
+            <p className="text-[11px] text-emerald-600 font-semibold mt-1">
+              {activeShift ? `الوردية #${activeShift.shift_number}` : 'الوردية مغلقة'}
+            </p>
           </div>
-        </div>
 
-        {/* Live Activity Feed + Shift Closure Readiness */}
+          {/* KPI 5: Needs Attention */}
+          <div className={`p-4 sm:p-5 rounded-3xl border shadow-xs transition-all col-span-2 sm:col-span-1 ${
+            needsAttentionCount > 0
+              ? 'bg-rose-50/70 border-rose-300 text-rose-950'
+              : 'bg-white border-gray-200 text-gray-900'
+          }`}>
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-gray-600">تتطلب تدخلاً فورياً</span>
+              <span className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm font-bold ${
+                needsAttentionCount > 0 ? 'bg-rose-200 text-rose-900 animate-pulse' : 'bg-zinc-100 text-zinc-600'
+              }`}>
+                ⚠️
+              </span>
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-black mt-2">
+              {needsAttentionCount}
+            </h3>
+            <p className="text-[11px] font-semibold mt-1 opacity-90">
+              {needsAttentionCount > 0 ? 'معوقات بحاجة للحسم' : 'العمليات منضبطة تماماً ✓'}
+            </p>
+          </div>
+        </section>
+
+        {/* ========================================== */}
+        {/* SECTION C: NEEDS ATTENTION HUB (See -> Understand -> Act) */}
+        {/* ========================================== */}
+        {needsAttentionList.length > 0 && (
+          <section aria-label="مركز التدخل السريع" className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                <span>⚠️ مركز التدخل السريع (Needs Attention Hub)</span>
+                <span className="text-[10px] bg-rose-100 text-rose-900 font-extrabold px-2.5 py-0.5 rounded-full">
+                  {needsAttentionList.length} تنبيه تشغيلي
+                </span>
+              </h2>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {needsAttentionList.map((item) => (
+                <div
+                  key={item.id}
+                  className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs transition-all ${
+                    item.type === 'urgent'
+                      ? 'bg-rose-50/90 border-rose-300 text-rose-950'
+                      : item.type === 'warning'
+                      ? 'bg-amber-50/90 border-amber-300 text-amber-950'
+                      : 'bg-sky-50/90 border-sky-300 text-sky-950'
+                  }`}
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">
+                        {item.type === 'urgent' ? '🚨' : item.type === 'warning' ? '⚠️' : 'ℹ️'}
+                      </span>
+                      <h4 className="text-xs sm:text-sm font-black tracking-tight">{item.title}</h4>
+                    </div>
+                    <p className="text-[11px] opacity-85 pr-6 font-medium">{item.description}</p>
+                  </div>
+
+                  <Link
+                    href={item.actionHref}
+                    className={`text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition-all text-center whitespace-nowrap shrink-0 ${
+                      item.type === 'urgent'
+                        ? 'bg-rose-600 hover:bg-rose-700 text-white'
+                        : item.type === 'warning'
+                        ? 'bg-amber-600 hover:bg-amber-700 text-white'
+                        : 'bg-sky-600 hover:bg-sky-700 text-white'
+                    }`}
+                  >
+                    {item.actionLabel}
+                  </Link>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ========================================== */}
+        {/* SECTION D: QUICK ACTIONS BAR (Act) */}
+        {/* ========================================== */}
+        <section aria-label="إجراءات العمليات السريعة" className="space-y-3">
+          <h2 className="text-sm font-black text-gray-900 flex items-center gap-2">
+            <span>⚡ إجراءات التشغيل السريعة (Quick Actions)</span>
+          </h2>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            {/* Action 1: New Manual Order */}
+            <Link
+              href="/orders"
+              className="bg-gradient-to-br from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white p-3.5 rounded-2xl shadow-xs flex flex-col items-center justify-center text-center gap-1.5 transition-all group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">➕</span>
+              <span className="text-xs font-black">طلب جديد</span>
+            </Link>
+
+            {/* Action 2: Orders Board */}
+            <Link
+              href="/orders"
+              className="bg-white hover:bg-zinc-50 text-gray-900 border border-gray-200 p-3.5 rounded-2xl shadow-xs flex flex-col items-center justify-center text-center gap-1.5 transition-all group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">📦</span>
+              <span className="text-xs font-bold">لوحة الطلبات</span>
+            </Link>
+
+            {/* Action 3: Dispatch & Assignments */}
+            <Link
+              href="/assignments"
+              className="bg-white hover:bg-zinc-50 text-gray-900 border border-gray-200 p-3.5 rounded-2xl shadow-xs flex flex-col items-center justify-center text-center gap-1.5 transition-all group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">🛵</span>
+              <span className="text-xs font-bold">إسناد وتوجيه</span>
+            </Link>
+
+            {/* Action 4: Kitchen KDS */}
+            <Link
+              href="/kitchen"
+              className="bg-white hover:bg-zinc-50 text-gray-900 border border-gray-200 p-3.5 rounded-2xl shadow-xs flex flex-col items-center justify-center text-center gap-1.5 transition-all group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">🍳</span>
+              <span className="text-xs font-bold">شاشة المطبخ</span>
+            </Link>
+
+            {/* Action 5: Shift Control & Cash */}
+            <Link
+              href="/shift-control"
+              className="bg-white hover:bg-zinc-50 text-gray-900 border border-gray-200 p-3.5 rounded-2xl shadow-xs flex flex-col items-center justify-center text-center gap-1.5 transition-all group"
+            >
+              <span className="text-xl group-hover:scale-110 transition-transform">💰</span>
+              <span className="text-xs font-bold">الوردية والخزينة</span>
+            </Link>
+
+            {/* Action 6: Send Telegram Summary */}
+            <button
+              onClick={handleSendTelegramReport}
+              disabled={isSendingReport || !activeShift}
+              className={`p-3.5 rounded-2xl shadow-xs flex flex-col items-center justify-center text-center gap-1.5 transition-all cursor-pointer ${
+                activeShift
+                  ? 'bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300'
+                  : 'bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed opacity-60'
+              }`}
+              title={activeShift ? 'إرسال ملخص الوردية لتليجرام المالك' : 'لا توجد وردية مفتوحة'}
+            >
+              <span className="text-xl">{isSendingReport ? '⏳' : '📲'}</span>
+              <span className="text-xs font-bold">تقرير تليجرام</span>
+            </button>
+          </div>
+        </section>
+
+        {/* ========================================== */}
+        {/* SECTION E & F: ACTIVE ORDERS QUEUE & DRIVER FLEET SNAPSHOT */}
+        {/* ========================================== */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Shift Closure Readiness Section (2 Columns on Desktop) */}
-          <div className="lg:col-span-2 bg-white border border-gray-200 rounded-3xl p-6 shadow-sm space-y-5">
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-100 pb-4">
+          {/* Active Orders List (2 Columns on Desktop) */}
+          <div className="lg:col-span-2 bg-white border border-gray-200 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
               <div>
-                <h2 className="text-lg font-black text-gray-900 flex items-center gap-2">
-                  <span>🛡️ تدقيق جاهزية إغلاق الوردية (Shift Closure Audit)</span>
-                  {closureAudit && (
-                    <span className={`text-xs font-extrabold px-3 py-1 rounded-full ${
-                      !closureAudit.hasActiveShift
-                        ? 'bg-amber-100 text-amber-800 border border-amber-300'
-                        : closureAudit.canClose
-                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                        : 'bg-rose-100 text-rose-800 border border-rose-300'
-                    }`}>
-                      {!closureAudit.hasActiveShift
-                        ? '⚠️ لا توجد وردية مفتوحة'
-                        : closureAudit.canClose
-                        ? 'جاهز للإغلاق الآن ✅'
-                        : 'غير متاح للإغلاق حالياً ⚠️'}
-                    </span>
-                  )}
-                </h2>
-                <p className="text-xs text-gray-500 mt-1">
-                  فحص أوتوماتيكي لقواعد إغلاق اليوم: لا يمكن إنهاء الوردية دون حسم كل الطلبات وتصفية العهد النقدية
+                <h3 className="text-sm sm:text-base font-black text-gray-900 flex items-center gap-2">
+                  <span>📋 قائمة الطلبات النشطة ذات الأولوية</span>
+                  <span className="text-xs bg-zinc-100 text-zinc-700 font-bold px-2 py-0.5 rounded-full">
+                    {activeOrdersCount} طلب قيد التنفيذ
+                  </span>
+                </h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  الطلبات التي تتطلب تقدماً بالحالة أو تسليم بالمطبخ أو التوصيل
                 </p>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
-                <button
-                  onClick={handleSendTelegramReport}
-                  disabled={isSendingReport || !activeShift}
-                  className={`border text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition-all flex items-center gap-1.5 ${
-                    activeShift
-                      ? 'bg-sky-50 hover:bg-sky-100 text-sky-900 border-sky-300 cursor-pointer'
-                      : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
-                  }`}
-                  title={activeShift ? "إرسال ملخص الوردية اليومية الحالي إلى تليجرام المالك فوراً" : "لا توجد وردية مفتوحة لإرسال تقريرها"}
-                >
-                  <span>{isSendingReport ? '⏳ جاري الإرسال...' : '📲 إرسال التقرير لتليجرام'}</span>
-                </button>
-                <button
-                  onClick={fetchDashboardData}
-                  disabled={isAuditing}
-                  className="bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-bold px-3 py-2 rounded-xl transition-all cursor-pointer"
-                >
-                  🔄 إعادة الفحص
-                </button>
-                <Link
-                  href="/shift-control"
-                  className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-black px-3.5 py-2 rounded-xl shadow-sm transition-all"
-                >
-                  📋 تصفية الوردية
-                </Link>
-              </div>
+              <Link
+                href="/orders"
+                className="text-xs font-black text-amber-700 hover:text-amber-800 hover:underline flex items-center gap-1"
+              >
+                <span>عرض الكل</span>
+                <span>⬅️</span>
+              </Link>
             </div>
 
-            {closureAudit ? (
-              !closureAudit.hasActiveShift ? (
-                <div className="bg-amber-50 border border-amber-200 p-5 rounded-2xl text-amber-900 flex flex-wrap items-center justify-between gap-4">
-                  <div className="flex items-center gap-4">
-                    <span className="text-3xl">⚠️</span>
-                    <div>
-                      <h4 className="font-black text-sm">لا توجد وردية مفتوحة حالياً</h4>
-                      <p className="text-xs text-amber-700 mt-0.5">
-                        يجب فتح وردية تشغيل وتحديد رصيد الخزينة الافتتاحي أولاً لبدء العمليات وإجراء فحص إغلاق الوردية.
-                      </p>
-                    </div>
-                  </div>
-                  <Link
-                    href="/shift-control"
-                    className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-black px-4 py-2.5 rounded-xl shadow-sm transition-all whitespace-nowrap"
-                  >
-                    ➕ فتح وردية جديدة
-                  </Link>
-                </div>
-              ) : closureAudit.canClose ? (
-                <div className="bg-emerald-50 border border-emerald-200 p-5 rounded-2xl text-emerald-900 flex items-center gap-4">
-                  <span className="text-3xl">🎉</span>
-                  <div>
-                    <h4 className="font-black text-sm">كافة المعايير مستوفاة بنجاح!</h4>
-                    <p className="text-xs text-emerald-700 mt-0.5">
-                      لا توجد أي طلبات معلقة بالمطبخ أو رحلات دليفري نشطة. يمكنك التوجه إلى صفحة التحصيل وطباعة التقرير النهائي وإغلاق وردية المطعم بأمان.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-rose-50 border border-rose-200 p-5 rounded-2xl text-rose-900 space-y-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-2xl">⚠️</span>
-                    <h4 className="font-black text-sm">
-                      لا يمكن إغلاق الوردية حتى معالجة المعوقات التالية:
-                    </h4>
-                  </div>
-                  <ul className="list-disc list-inside space-y-1 text-xs font-bold text-rose-800 pr-4">
-                    {closureAudit.issues.map((issue, idx) => (
-                      <li key={idx}>{issue}</li>
-                    ))}
-                  </ul>
-                </div>
-              )
+            {activeUrgentOrders.length === 0 ? (
+              <div className="text-center py-12 text-gray-400 space-y-2">
+                <div className="text-3xl">✨</div>
+                <h4 className="text-xs font-black text-gray-600">لا توجد طلبات نشطة معلقة حالياً</h4>
+                <p className="text-[11px] text-gray-400">
+                  كافة الطلبات إما تم تسليمها بنجاح أو لم يتم تسجيل طلبات جديدة بعد.
+                </p>
+              </div>
             ) : (
-              <div className="text-center py-6 text-xs text-gray-400 font-bold">جاري تدقيق الشفت...</div>
+              <div className="divide-y divide-gray-100">
+                {activeUrgentOrders.map((order) => {
+                  const statusInfo = ORDER_STATUS_LABELS[order.status] || {
+                    label: order.status,
+                    badgeClass: 'bg-gray-100 text-gray-800 border-gray-300',
+                  }
+
+                  return (
+                    <div
+                      key={order.id}
+                      className="py-3 flex flex-wrap items-center justify-between gap-3 hover:bg-zinc-50/80 px-2 rounded-xl transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-zinc-100 border border-zinc-200 flex flex-col items-center justify-center shrink-0">
+                          <span className="text-[10px] text-zinc-500 font-bold">طلب</span>
+                          <span className="text-xs font-black font-mono text-zinc-900">#{order.order_number}</span>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-xs font-black text-gray-900">{order.customer_name}</h4>
+                            <span className="text-[10px] bg-zinc-100 text-zinc-600 px-1.5 py-0.5 rounded font-bold">
+                              {order.order_type === 'delivery'
+                                ? '🛵 دليفري'
+                                : order.order_type === 'takeaway'
+                                ? '🥡 تيك أواي'
+                                : '🍽️ صالة'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-gray-500 mt-0.5">
+                            {new Date(order.created_at).toLocaleTimeString('ar-EG', {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}{' '}
+                            • <strong className="text-gray-800 tabular-nums">{order.total_amount} ج.م</strong>
+                            {order.driver_name && (
+                              <span className="text-teal-700 font-bold mr-2">
+                                (الطيار: {order.driver_name})
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[11px] font-extrabold px-2.5 py-1 rounded-lg border ${statusInfo.badgeClass}`}>
+                          {statusInfo.label}
+                        </span>
+
+                        <Link
+                          href="/orders"
+                          className="bg-zinc-100 hover:bg-zinc-200 text-zinc-800 text-[11px] font-bold px-2.5 py-1 rounded-lg transition-colors"
+                        >
+                          معالجة ⬅️
+                        </Link>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
             )}
           </div>
 
-          {/* Live Telegram & Dashboard Activity Stream (1 Column on Desktop) */}
-          <div className="bg-white border border-gray-200 rounded-3xl p-5 shadow-sm space-y-4">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                <span>📡 التنبيهات اللحظية المباشرة</span>
-              </h3>
-              <span className="text-[10px] bg-zinc-100 text-zinc-700 px-2 py-0.5 rounded-full font-bold">
-                {liveAlerts.length} حدث مسجل
-              </span>
+          {/* Driver Fleet Snapshot (1 Column on Desktop) */}
+          <div className="bg-white border border-gray-200 rounded-3xl p-5 shadow-xs space-y-4 flex flex-col justify-between">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                  <span>🛵 أسطول التوصيل الميداني</span>
+                </h3>
+                <span className="text-[10px] bg-teal-100 text-teal-900 font-bold px-2 py-0.5 rounded-full">
+                  {activeDriversCount} في الخدمة
+                </span>
+              </div>
+
+              {/* Fleet Roster Stats */}
+              <div className="grid grid-cols-2 gap-2 text-center">
+                <div className="bg-zinc-50 p-3 rounded-2xl border border-zinc-200">
+                  <span className="text-[10px] font-bold text-zinc-500 block">طيارين متاحين</span>
+                  <span className="text-lg font-black text-emerald-600">{availableDriversCount}</span>
+                </div>
+                <div className="bg-zinc-50 p-3 rounded-2xl border border-zinc-200">
+                  <span className="text-[10px] font-bold text-zinc-500 block">في رحلات (مشغول)</span>
+                  <span className="text-lg font-black text-teal-600">{busyDriversCount}</span>
+                </div>
+              </div>
+
+              {/* Driver List Preview */}
+              <div className="space-y-2">
+                <span className="text-[11px] font-black text-gray-700 block">حالة الطيارين:</span>
+                {drivers.length === 0 ? (
+                  <p className="text-xs text-gray-400 py-2">لا يوجد طيارين مسجلين</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                    {drivers.map((d) => (
+                      <div
+                        key={d.id}
+                        className="flex items-center justify-between p-2 rounded-xl bg-zinc-50/80 border border-zinc-200/80 text-xs"
+                      >
+                        <span className="font-bold text-gray-800">{d.name}</span>
+                        <span
+                          className={`text-[10px] font-black px-2 py-0.5 rounded-md ${
+                            d.status === 'available'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : d.status === 'busy'
+                              ? 'bg-teal-100 text-teal-800'
+                              : 'bg-gray-200 text-gray-600'
+                          }`}
+                        >
+                          {d.status === 'available'
+                            ? 'متاح بالفرع 🟢'
+                            : d.status === 'busy'
+                            ? 'في مشوار 🛵'
+                            : 'خارج الدوام ⚪'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
-              {liveAlerts.length === 0 ? (
-                <div className="text-center py-10 text-xs text-gray-400 font-bold space-y-1">
-                  <div className="text-2xl">⚡</div>
-                  <p>في انتظار الأحداث المباشرة...</p>
-                  <p className="text-[10px] text-gray-400">أي حركة أو إلغاء ستظهر هنا وتُرسل لتليجرام فوراً</p>
-                </div>
-              ) : (
-                liveAlerts.map((alert) => (
-                  <div
-                    key={alert.id}
-                    className={`p-3 rounded-2xl border text-xs transition-all ${
-                      alert.type === 'urgent'
-                        ? 'bg-rose-50 border-rose-200 text-rose-900'
-                        : alert.type === 'warning'
-                        ? 'bg-amber-50 border-amber-200 text-amber-900'
-                        : alert.type === 'success'
-                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                        : 'bg-blue-50 border-blue-200 text-blue-900'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-black">
-                      <span>{alert.title}</span>
-                      <span className="text-[10px] opacity-75 font-mono">{alert.time}</span>
-                    </div>
-                    <p className="text-[11px] font-medium mt-1 leading-snug">{alert.message}</p>
-                  </div>
-                ))
-              )}
-            </div>
+            <Link
+              href="/drivers"
+              className="w-full bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-black py-2.5 rounded-xl text-center shadow-xs transition-colors block mt-3"
+            >
+              مركز إدارة وتصفية الطيارين ⬅️
+            </Link>
           </div>
         </div>
 
-        {/* Quick Operations Links */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          <Link
-            href="/orders"
-            className="bg-white p-5 rounded-3xl border border-gray-200 hover:border-amber-500 shadow-sm transition-all group"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl">🥩</span>
-              <span className="text-xs font-bold text-amber-700 group-hover:underline">فتح اللوحة ⬅️</span>
-            </div>
-            <h4 className="font-black text-base text-gray-900 mt-3">لوحة الكاشير المباشرة</h4>
-            <p className="text-xs text-gray-500 mt-1">
-              متابعة واستقبال طلبات العملاء وتحديث حالات الدفع والاستلام ريل تايم
-            </p>
-          </Link>
+        {/* Live Activity Stream (Recent Events) */}
+        <section aria-label="شريط النشاط اللحظي" className="bg-white border border-gray-200 rounded-3xl p-5 shadow-xs space-y-3">
+          <div className="flex items-center justify-between border-b border-gray-100 pb-2.5">
+            <h3 className="text-xs sm:text-sm font-black text-gray-900 flex items-center gap-2">
+              <span>📡 شريط النشاط اللحظي والتنبيهات المباشرة</span>
+            </h3>
+            <span className="text-[10px] text-gray-500 font-bold">{liveAlerts.length} حدث مسجل</span>
+          </div>
 
-          <Link
-            href="/kitchen"
-            className="bg-white p-5 rounded-3xl border border-gray-200 hover:border-amber-500 shadow-sm transition-all group"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl">🍳</span>
-              <span className="text-xs font-bold text-amber-700 group-hover:underline">فتح الشاشة ⬅️</span>
-            </div>
-            <h4 className="font-black text-base text-gray-900 mt-3">شاشة تحضير المطبخ</h4>
-            <p className="text-xs text-gray-500 mt-1">
-              شاشة مخصصة لطاقم الطهي تعرض الأصناف وملاحظات التجهيز بدون أسعار
-            </p>
-          </Link>
-
-          <Link
-            href="/assignments"
-            className="bg-white p-5 rounded-3xl border border-gray-200 hover:border-amber-500 shadow-sm transition-all group"
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-2xl">📦</span>
-              <span className="text-xs font-bold text-amber-700 group-hover:underline">فتح الإسناد ⬅️</span>
-            </div>
-            <h4 className="font-black text-base text-gray-900 mt-3">إسناد رحلات التوصيل</h4>
-            <p className="text-xs text-gray-500 mt-1">
-              توزيع الطلبات الجاهزة على طيارين الفرع وتكوين خطوط السير التجميعية
-            </p>
-          </Link>
-        </div>
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {liveAlerts.length === 0 ? (
+              <p className="text-xs text-gray-400 py-3 text-center">في انتظار الأحداث اللحظية الجديدة...</p>
+            ) : (
+              liveAlerts.map((alert) => (
+                <div
+                  key={alert.id}
+                  className={`p-2.5 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+                    alert.type === 'urgent'
+                      ? 'bg-rose-50 border-rose-200 text-rose-900'
+                      : alert.type === 'warning'
+                      ? 'bg-amber-50 border-amber-200 text-amber-900'
+                      : alert.type === 'success'
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                      : 'bg-zinc-50 border-zinc-200 text-zinc-900'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">
+                      {alert.type === 'urgent'
+                        ? '🚨'
+                        : alert.type === 'warning'
+                        ? '⚠️'
+                        : alert.type === 'success'
+                        ? '🔔'
+                        : 'ℹ️'}
+                    </span>
+                    <span className="font-bold">{alert.title}:</span>
+                    <span className="opacity-90">{alert.message}</span>
+                  </div>
+                  <span className="text-[10px] opacity-75 font-mono shrink-0">{alert.time}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
       </main>
     </div>
   )
