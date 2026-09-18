@@ -19,6 +19,7 @@ interface DashboardStats {
 }
 
 interface ClosureAuditResult {
+  hasActiveShift: boolean
   canClose: boolean
   issues: string[]
   unresolvedOrdersCount: number
@@ -53,13 +54,16 @@ export default function DashboardPage() {
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [liveAlerts, setLiveAlerts] = useState<LiveAlert[]>([])
   const [activeToast, setActiveToast] = useState<LiveAlert | null>(null)
+  const [activeShift, setActiveShift] = useState<{ id: string; totalSales?: number; driverCustodyCash?: number } | null>(null)
+  const [currentStaff, setCurrentStaff] = useState<{ id: string; full_name: string; role: string } | null>(null)
   const [isSendingReport, setIsSendingReport] = useState(false)
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const handleSendTelegramReport = async () => {
     setIsSendingReport(true)
     try {
-      const res = await fetch('/api/admin/daily-report', { method: 'POST' })
+      const shiftQuery = activeShift?.id ? `?shift_id=${activeShift.id}` : ''
+      const res = await fetch(`/api/admin/daily-report${shiftQuery}`, { method: 'POST' })
       const data = await res.json()
       if (data.success) {
         triggerAlert({
@@ -102,28 +106,32 @@ export default function DashboardPage() {
   const fetchDashboardData = async () => {
     setLoading(true)
     try {
-      const [ordersRes, driversRes, tripsRes] = await Promise.all([
+      const [ordersRes, driversRes, tripsRes, dailyShiftRes] = await Promise.all([
         fetch('/api/admin/orders?status=all'),
         fetch('/api/admin/drivers'),
         fetch('/api/admin/trips'),
+        fetch('/api/admin/daily-shift'),
       ])
 
       const ordersData = await ordersRes.json()
       const driversData = await driversRes.json()
       const tripsData = await tripsRes.json()
+      const dailyShiftData = await dailyShiftRes.json()
 
       const allOrders: any[] = ordersData.orders || []
       const allDrivers: any[] = driversData.drivers || []
       const allTrips: any[] = tripsData.trips || []
-
-      const todayStr = new Date().toISOString().split('T')[0]
+      const currentShift = dailyShiftData.hasActiveShift ? dailyShiftData.activeShift : null
+      setActiveShift(currentShift)
+      if (dailyShiftData.currentStaff) {
+        setCurrentStaff(dailyShiftData.currentStaff)
+      }
 
       let pending = 0
       let processing = 0
       let ready = 0
       let deliveryActive = 0
-      let completedToday = 0
-      let revenueToday = 0
+      let completedShiftOrders = 0
 
       for (const o of allOrders) {
         if (o.status === 'pending') pending++
@@ -131,12 +139,9 @@ export default function DashboardPage() {
         else if (o.status === 'ready') ready++
         else if (['assigned', 'picked_up', 'out_for_delivery'].includes(o.status)) deliveryActive++
 
-        if (o.status === 'completed' || o.status === 'delivered') {
-          const orderDate = (o.created_at || '').split('T')[0]
-          if (orderDate === todayStr) {
-            completedToday++
-            revenueToday += Number(o.total_amount || 0)
-          }
+        // Ownership strictly tied to current daily_shift_id
+        if ((o.status === 'completed' || o.status === 'delivered') && currentShift && o.daily_shift_id === currentShift.id) {
+          completedShiftOrders++
         }
       }
 
@@ -148,39 +153,57 @@ export default function DashboardPage() {
         processingOrders: processing,
         readyOrders: ready,
         deliveryActive,
-        completedToday,
-        totalRevenueToday: revenueToday,
+        completedToday: completedShiftOrders,
+        totalRevenueToday: currentShift ? Number(currentShift.totalSales || 0) : 0,
         totalDriversCount: allDrivers.length,
         activeDriversCount: activeDrivers.length,
       })
 
       // Run automatic readiness audit
       const issues: string[] = []
-      const openOrders = allOrders.filter((o: any) =>
-        ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
-      )
 
-      if (openOrders.length > 0) {
-        issues.push(`يوجد ${openOrders.length} طلب مفتوح لم يُحسم بعد (بين معلق، تجهيز، أو دليفري).`)
+      if (!currentShift) {
+        setClosureAudit({
+          hasActiveShift: false,
+          canClose: false,
+          issues: ['لا توجد وردية مفتوحة حالياً — يجب فتح وردية أولاً.'],
+          unresolvedOrdersCount: 0,
+          activeDriversInTripsCount: 0,
+          pendingCollectedAmount: 0,
+        })
+      } else {
+        const openOrders = allOrders.filter((o: any) =>
+          ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+        )
+
+        if (openOrders.length > 0) {
+          issues.push(`يوجد ${openOrders.length} طلب مفتوح لم يُحسم بعد (بين معلق، تجهيز، أو دليفري).`)
+        }
+
+        const activeTrips = allTrips.filter((t: any) => t.status !== 'completed' && t.status !== 'cancelled')
+        if (activeTrips.length > 0) {
+          issues.push(`يوجد ${activeTrips.length} رحلة دليفري نشطة في الميدان لم تُغلق.`)
+        }
+
+        const activeDriverShifts = allDrivers.filter((d: any) => d.active_shift_id || d.status === 'available' || d.status === 'busy')
+        if (activeDriverShifts.length > 0) {
+          issues.push(`يوجد ${activeDriverShifts.length} طيار في حالة دوام نشط — يجب إنهاء ورديات الطيارين أولاً.`)
+        }
+
+        const driverCustodyAmount = Number(currentShift.driverCustodyCash || 0)
+        if (driverCustodyAmount > 0) {
+          issues.push(`توجد عهدة كاش معلقة مع الطيارين بقيمة ${driverCustodyAmount} ج.م.`)
+        }
+
+        setClosureAudit({
+          hasActiveShift: true,
+          canClose: issues.length === 0,
+          issues,
+          unresolvedOrdersCount: openOrders.length,
+          activeDriversInTripsCount: activeTrips.length,
+          pendingCollectedAmount: driverCustodyAmount,
+        })
       }
-
-      const activeTrips = allTrips.filter((t: any) => t.status !== 'completed' && t.status !== 'cancelled')
-      if (activeTrips.length > 0) {
-        issues.push(`يوجد ${activeTrips.length} رحلة دليفري نشطة في الميدان لم تُغلق.`)
-      }
-
-      let pendingCollected = 0
-      for (const t of activeTrips) {
-        pendingCollected += Number(t.expected_amount || 0)
-      }
-
-      setClosureAudit({
-        canClose: issues.length === 0,
-        issues,
-        unresolvedOrdersCount: openOrders.length,
-        activeDriversInTripsCount: activeTrips.length,
-        pendingCollectedAmount: pendingCollected,
-      })
     } catch (err) {
       console.error('Error loading dashboard data:', err)
     } finally {
@@ -332,6 +355,17 @@ export default function DashboardPage() {
           </div>
 
           <div className="flex items-center gap-3">
+            {currentStaff && (
+              <div className="flex items-center gap-2 bg-amber-50/90 border border-amber-300 px-3 py-1.5 rounded-xl text-xs shadow-xs">
+                <span className="font-black text-amber-950 flex items-center gap-1.5">
+                  <span>👤</span>
+                  <span>{currentStaff.full_name}</span>
+                </span>
+                <span className="bg-amber-200/70 text-amber-900 font-bold px-2 py-0.5 rounded-md text-[11px]">
+                  {currentStaff.role === 'owner' ? 'مالك المطعم' : currentStaff.role === 'manager' ? 'مشرف / مدير' : currentStaff.role === 'cashier' ? 'كاشير' : currentStaff.role === 'kitchen' ? 'شيف / مطبخ' : currentStaff.role}
+                </span>
+              </div>
+            )}
             <button
               onClick={() => {
                 setSoundEnabled(!soundEnabled)
@@ -424,11 +458,17 @@ export default function DashboardPage() {
                   <span>🛡️ تدقيق جاهزية إغلاق الوردية (Shift Closure Audit)</span>
                   {closureAudit && (
                     <span className={`text-xs font-extrabold px-3 py-1 rounded-full ${
-                      closureAudit.canClose
+                      !closureAudit.hasActiveShift
+                        ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                        : closureAudit.canClose
                         ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                         : 'bg-rose-100 text-rose-800 border border-rose-300'
                     }`}>
-                      {closureAudit.canClose ? 'جاهز للإغلاق الآن ✅' : 'غير متاح للإغلاق حالياً ⚠️'}
+                      {!closureAudit.hasActiveShift
+                        ? '⚠️ لا توجد وردية مفتوحة'
+                        : closureAudit.canClose
+                        ? 'جاهز للإغلاق الآن ✅'
+                        : 'غير متاح للإغلاق حالياً ⚠️'}
                     </span>
                   )}
                 </h2>
@@ -440,9 +480,13 @@ export default function DashboardPage() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <button
                   onClick={handleSendTelegramReport}
-                  disabled={isSendingReport}
-                  className="bg-sky-50 hover:bg-sky-100 text-sky-900 border border-sky-300 text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer"
-                  title="إرسال ملخص الوردية اليومية الحالي إلى تليجرام المالك فوراً"
+                  disabled={isSendingReport || !activeShift}
+                  className={`border text-xs font-black px-3.5 py-2 rounded-xl shadow-xs transition-all flex items-center gap-1.5 ${
+                    activeShift
+                      ? 'bg-sky-50 hover:bg-sky-100 text-sky-900 border-sky-300 cursor-pointer'
+                      : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+                  }`}
+                  title={activeShift ? "إرسال ملخص الوردية اليومية الحالي إلى تليجرام المالك فوراً" : "لا توجد وردية مفتوحة لإرسال تقريرها"}
                 >
                   <span>{isSendingReport ? '⏳ جاري الإرسال...' : '📲 إرسال التقرير لتليجرام'}</span>
                 </button>
@@ -463,7 +507,25 @@ export default function DashboardPage() {
             </div>
 
             {closureAudit ? (
-              closureAudit.canClose ? (
+              !closureAudit.hasActiveShift ? (
+                <div className="bg-amber-50 border border-amber-200 p-5 rounded-2xl text-amber-900 flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <span className="text-3xl">⚠️</span>
+                    <div>
+                      <h4 className="font-black text-sm">لا توجد وردية مفتوحة حالياً</h4>
+                      <p className="text-xs text-amber-700 mt-0.5">
+                        يجب فتح وردية تشغيل وتحديد رصيد الخزينة الافتتاحي أولاً لبدء العمليات وإجراء فحص إغلاق الوردية.
+                      </p>
+                    </div>
+                  </div>
+                  <Link
+                    href="/shift-control"
+                    className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-black px-4 py-2.5 rounded-xl shadow-sm transition-all whitespace-nowrap"
+                  >
+                    ➕ فتح وردية جديدة
+                  </Link>
+                </div>
+              ) : closureAudit.canClose ? (
                 <div className="bg-emerald-50 border border-emerald-200 p-5 rounded-2xl text-emerald-900 flex items-center gap-4">
                   <span className="text-3xl">🎉</span>
                   <div>

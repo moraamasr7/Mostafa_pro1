@@ -1,27 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
-import { ADMIN_COOKIE_NAME } from '../login/route'
+import { ADMIN_COOKIE_NAME, getStaffSession, canStaffCloseShift } from '@/lib/staffAuth'
 import { notifyShiftOpened, sendTelegramFinalDailyReport } from '@/lib/telegram'
 import { calculateFleetDriversAccounting } from '@/lib/driverAccounting'
 import { calculateDailyShiftAccounting } from '@/lib/dailyShiftAccounting'
 import { buildFinalDailyReport } from '@/lib/dailyReportPresentation'
+import { isRestaurantOpen } from '@/lib/schedule'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
   try {
     const cookieStore = await cookies()
-    const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME)
+    const serverSupabase = getSupabaseServerClient()
 
-    if (!sessionCookie || !sessionCookie.value.startsWith('staff_auth_')) {
+    const { staff: currentStaff, error: authErr, status: authStatus } = await getStaffSession(serverSupabase, cookieStore)
+    if (authErr || !currentStaff) {
       return NextResponse.json(
-        { error: 'غير مصرح الوصول. يرجى تسجيل الدخول.' },
-        { status: 401 }
+        { error: authErr || 'غير مصرح الوصول. يرجى تسجيل الدخول كعضو في طاقم العمل.' },
+        { status: authStatus || 401 }
       )
     }
-
-    const serverSupabase = getSupabaseServerClient()
 
     // 1. Get current active shift
     const { data: activeShift, error: shiftErr } = await serverSupabase
@@ -49,24 +49,35 @@ export async function GET(request: NextRequest) {
         hasActiveShift: false,
         activeShift: null,
         lastClosedShift: lastClosed || null,
+        currentStaff: {
+          id: currentStaff.id,
+          full_name: currentStaff.full_name,
+          role: currentStaff.role,
+        },
       }, { status: 200 })
     }
 
-    // 2. Calculate shift financials using Canonical Daily Shift Accounting
+    // 2. Fetch canonical accounting engine for active shift
     const accounting = await calculateDailyShiftAccounting(serverSupabase, activeShift.id)
 
     return NextResponse.json({
       hasActiveShift: true,
+      currentStaff: {
+        id: currentStaff.id,
+        full_name: currentStaff.full_name,
+        role: currentStaff.role,
+      },
       activeShift: {
-        ...activeShift,
+        id: activeShift.id,
+        shift_number: activeShift.shift_number,
+        opened_by: activeShift.opened_by,
+        opened_at: activeShift.opened_at,
+        initial_cash: accounting.initial_cash,
+        status: activeShift.status,
+        notes: activeShift.notes,
         totalSales: accounting.total_sales,
         cashSales: accounting.cash_sales,
-        driverCustodyCash: accounting.driver_custody_cash,
-        uncollectedCash: accounting.uncollected_cash,
-        instapaySales: accounting.instapay_sales,
-        walletSales: accounting.wallet_sales,
-        otherElectronicSales: accounting.other_electronic_sales,
-        nonCashSales: accounting.instapay_sales + accounting.wallet_sales + accounting.other_electronic_sales,
+        nonCashSales: (accounting.instapay_sales || 0) + (accounting.wallet_sales || 0) + (accounting.other_electronic_sales || 0),
         takeawaySales: accounting.takeaway_sales,
         deliverySales: accounting.delivery_sales,
         totalExpenses: accounting.total_expenses,
@@ -74,6 +85,8 @@ export async function GET(request: NextRequest) {
         driverAdvances: accounting.driver_advances,
         staffAdvances: accounting.staff_advances,
         systemExpectedCash: accounting.system_expected_cash,
+        driverCustodyCash: accounting.driver_custody_cash,
+        uncollectedCash: accounting.uncollected_cash,
         fleetAccounting: accounting.fleet_accounting ? {
           hourlyRate: accounting.fleet_accounting.hourly_rate,
           driversCount: accounting.fleet_accounting.drivers_count,
@@ -95,23 +108,21 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const cookieStore = await cookies()
-    const sessionCookie = cookieStore.get(ADMIN_COOKIE_NAME)
+    const serverSupabase = getSupabaseServerClient()
 
-    if (!sessionCookie || !sessionCookie.value.startsWith('staff_auth_')) {
+    const { staff: currentStaff, error: authErr, status: authStatus } = await getStaffSession(serverSupabase, cookieStore)
+    if (authErr || !currentStaff) {
       return NextResponse.json(
-        { error: 'غير مصرح الوصول. يرجى تسجيل الدخول.' },
-        { status: 401 }
+        { error: authErr || 'غير مصرح الوصول. يرجى تسجيل الدخول كعضو في طاقم العمل.' },
+        { status: authStatus || 401 }
       )
     }
 
     const body = await request.json()
-    const { action, opened_by, initial_cash, closed_by, final_cash, notes } = body
-    const serverSupabase = getSupabaseServerClient()
+    const { action, opened_by, initial_cash, final_cash, notes } = body
 
     if (action === 'open') {
-      if (!opened_by || typeof opened_by !== 'string' || !opened_by.trim()) {
-        return NextResponse.json({ error: 'اسم المسؤول عن فتح الوردية مطلوب' }, { status: 400 })
-      }
+      const openActor = (opened_by && typeof opened_by === 'string' && opened_by.trim()) || currentStaff.full_name
 
       const { data: existing } = await serverSupabase
         .from('daily_shifts')
@@ -130,7 +141,7 @@ export async function POST(request: NextRequest) {
       const { data: newShift, error: insErr } = await serverSupabase
         .from('daily_shifts')
         .insert({
-          opened_by: opened_by.trim(),
+          opened_by: openActor,
           initial_cash: initialAmount,
           status: 'open',
           opened_at: new Date().toISOString(),
@@ -157,13 +168,28 @@ export async function POST(request: NextRequest) {
     }
 
     if (action === 'close') {
+      // 🔒 1. التحقق من صلاحية ونشاط الموظف المسؤول
+      if (!currentStaff.is_active) {
+        return NextResponse.json({ error: 'حساب الموظف غير نشط حالياً.' }, { status: 403 })
+      }
+
+      if (!canStaffCloseShift(currentStaff.role)) {
+        return NextResponse.json({
+          error: `صلاحية الموظف الحالية (${currentStaff.role}) لا تخوّله لإغلاق الوردية. يسمح فقط لـ (الكاشير، المشرف، المالك).`
+        }, { status: 403 })
+      }
+
+      // 🔒 2. التحقق من مواعيد العمل الرسمية للمطعم
+      const opStatus = await isRestaurantOpen(new Date())
+      if (opStatus.isOpen) {
+        return NextResponse.json({
+          error: '⚠️ BLOCKED: لا يمكن إنهاء الوردية قبل موعد الإغلاق الرسمي.'
+        }, { status: 400 })
+      }
+
       const { shift_id } = body
       if (!shift_id) {
         return NextResponse.json({ error: 'معرف الوردية مطلوب للإغلاق' }, { status: 400 })
-      }
-
-      if (!closed_by || typeof closed_by !== 'string' || !closed_by.trim()) {
-        return NextResponse.json({ error: 'اسم المسؤول عن إغلاق الوردية مطلوب' }, { status: 400 })
       }
 
       const { data: shift, error: fetchErr } = await serverSupabase
@@ -239,11 +265,14 @@ export async function POST(request: NextRequest) {
       const actualCash = Number(final_cash) || 0
       const discrepancy = Math.round((actualCash - expectedCash) * 100) / 100
 
+      // 🔒 3. استخدام هوية الموظف الموثوقة من الجلسة بدلاً من مدخلات الواجهة
+      const trustedClosedBy = `${currentStaff.full_name} (${currentStaff.role})`
+
       const { data: closedShift, error: updateErr } = await serverSupabase
         .from('daily_shifts')
         .update({
           status: 'closed',
-          closed_by: closed_by.trim(),
+          closed_by: trustedClosedBy,
           closed_at: new Date().toISOString(),
           final_cash: actualCash,
           system_expected_cash: expectedCash,

@@ -78,6 +78,8 @@ interface ActiveDailyShift {
   deliverySales: number
   totalExpenses: number
   systemExpectedCash: number
+  driverCustodyCash?: number
+  uncollectedCash?: number
   fleetAccounting?: {
     hourlyRate: number
     driversCount: number
@@ -100,6 +102,19 @@ interface ShiftExpenseItem {
   created_at: string
 }
 
+interface StaffProfileItem {
+  id: string
+  full_name: string
+  role: string
+}
+
+const STAFF_ROLE_LABELS: Record<string, string> = {
+  owner: 'مالك المطعم',
+  manager: 'مشرف / مدير',
+  cashier: 'كاشير',
+  kitchen: 'شيف / مطبخ',
+}
+
 export default function ShiftControlCenterPage() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null)
   const [passcode, setPasscode] = useState('')
@@ -112,6 +127,8 @@ export default function ShiftControlCenterPage() {
   const [trips, setTrips] = useState<DeliveryTripOverview[]>([])
   const [dailyShift, setDailyShift] = useState<ActiveDailyShift | null>(null)
   const [expenses, setExpenses] = useState<ShiftExpenseItem[]>([])
+  const [staffList, setStaffList] = useState<StaffProfileItem[]>([])
+  const [currentStaff, setCurrentStaff] = useState<StaffProfileItem | null>(null)
   
   const [loading, setLoading] = useState(true)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -128,12 +145,15 @@ export default function ShiftControlCenterPage() {
   const [isSubmittingShift, setIsSubmittingShift] = useState(false)
 
   const [showCloseShiftModal, setShowCloseShiftModal] = useState(false)
-  const [closeShiftStaff, setCloseShiftStaff] = useState('')
   const [actualCashInput, setActualCashInput] = useState('')
   const [closeShiftNotes, setCloseShiftNotes] = useState('')
 
   const [showExpenseModal, setShowExpenseModal] = useState(false)
-  const [expenseCategory, setExpenseCategory] = useState('سلف طيارين')
+  const [expenseType, setExpenseType] = useState<'advance' | 'operational'>('advance')
+  const [selectedPersonKey, setSelectedPersonKey] = useState<string>('')
+  const [advanceCustomName, setAdvanceCustomName] = useState('')
+  const [advanceReason, setAdvanceReason] = useState('')
+  const [expenseCategory, setExpenseCategory] = useState('مشتريات خضار ومستلزمات')
   const [expenseAmount, setExpenseAmount] = useState('')
   const [expenseDesc, setExpenseDesc] = useState('')
   const [expenseRecipient, setExpenseRecipient] = useState('')
@@ -144,12 +164,13 @@ export default function ShiftControlCenterPage() {
     setActionError(null)
 
     try {
-      const [scheduleRes, ordersRes, driversRes, tripsRes, dailyShiftRes] = await Promise.all([
+      const [scheduleRes, ordersRes, driversRes, tripsRes, dailyShiftRes, staffRes] = await Promise.all([
         fetch('/api/admin/schedule'),
         fetch('/api/admin/orders?status=all'),
         fetch('/api/admin/drivers'),
         fetch('/api/admin/trips'),
         fetch('/api/admin/daily-shift'),
+        fetch('/api/admin/staff'),
       ])
 
       if (ordersRes.status === 401 || driversRes.status === 401 || tripsRes.status === 401) {
@@ -163,6 +184,16 @@ export default function ShiftControlCenterPage() {
       const driversData = await driversRes.json()
       const tripsData = await tripsRes.json()
       const dailyShiftData = await dailyShiftRes.json()
+      if (staffRes && staffRes.ok) {
+        const staffData = await staffRes.json()
+        setStaffList(staffData.staff || [])
+        if (staffData.currentStaff) {
+          setCurrentStaff(staffData.currentStaff)
+        }
+      }
+      if (dailyShiftData.currentStaff) {
+        setCurrentStaff(dailyShiftData.currentStaff)
+      }
 
       if (ordersRes.ok && driversRes.ok && tripsRes.ok) {
         setIsAuthenticated(true)
@@ -364,14 +395,13 @@ export default function ShiftControlCenterPage() {
   // Close daily shift handler (Z-Report)
   const handleCloseShift = async (e: React.FormEvent) => {
     e.preventDefault()
-    const staff = closeShiftStaff.trim()
-    if (!staff) {
-      setActionError('يرجى كتابة اسم المسؤول عن تقفيل الوردية')
+    if (actualCashInput === '' || isNaN(parseFloat(actualCashInput))) {
+      setActionError('يرجى إدخال المبلغ الفعلي الموجود بالدرج')
       return
     }
 
-    if (actualCashInput === '' || isNaN(parseFloat(actualCashInput))) {
-      setActionError('يرجى إدخال المبلغ الفعلي الموجود بالدرج')
+    if (!dailyShift) {
+      setActionError('لا توجد وردية نشطة لإغلاقها')
       return
     }
 
@@ -384,17 +414,23 @@ export default function ShiftControlCenterPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'close',
-          closed_by: staff,
+          shift_id: dailyShift.id,
           final_cash: parseFloat(actualCashInput),
           notes: closeShiftNotes.trim() || undefined,
         }),
       })
 
       const data = await res.json()
-      if (res.ok) {
+      if (res.ok && data.success) {
         setShowCloseShiftModal(false)
-        setActionSuccess('تم إغلاق الوردية والتقفيل المالي بنجاح وإرسال تقرير Z-Report إلى تلجرام ✓')
-        setTimeout(() => setActionSuccess(null), 6000)
+        const rec = data.reconciliation
+        const statusBadge = rec?.reconciliation_status === 'balanced'
+          ? '✓ الدرج مطابق تماماً'
+          : rec?.reconciliation_status === 'surplus'
+          ? `📈 زيادة بالدرج (+${rec.discrepancy} ج.م)`
+          : `📉 عجز بالدرج (${rec?.discrepancy} ج.م)`
+        setActionSuccess(`تم إغلاق الوردية والتقفيل المالي بنجاح [${statusBadge}] وإرسال تقرير Z-Report إلى تليجرام ✓`)
+        setTimeout(() => setActionSuccess(null), 8000)
         fetchControlCenterData()
       } else {
         setActionError(data.error || 'تعذر إغلاق الوردية')
@@ -406,17 +442,86 @@ export default function ShiftControlCenterPage() {
     }
   }
 
-  // Add expense handler
+  // Add expense / advance handler
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault()
     const amt = parseFloat(expenseAmount)
     if (isNaN(amt) || amt <= 0) {
-      setActionError('يرجى إدخال مبلغ صحيح')
+      setActionError('يرجى إدخال مبلغ صحيح أكبر من صفر')
       return
     }
-    if (!expenseDesc.trim()) {
-      setActionError('يرجى كتابة تفاصيل وبند المصروف')
-      return
+
+    let payload: {
+      category: string
+      amount: number
+      description: string
+      recipient_name?: string
+      recorded_by?: string
+      driver_id?: string
+      staff_id?: string
+    }
+
+    if (expenseType === 'advance') {
+      if (!selectedPersonKey) {
+        setActionError('يرجى اختيار الشخص المستلم للسلفة أو تحديد "أخرى"')
+        return
+      }
+
+      if (selectedPersonKey === 'other') {
+        if (!advanceCustomName.trim()) {
+          setActionError('يرجى كتابة اسم المستلم للسلفة')
+          return
+        }
+        if (!advanceReason.trim()) {
+          setActionError('يرجى كتابة سبب وبيان السلفة')
+          return
+        }
+        payload = {
+          category: 'سلف موظفين',
+          amount: amt,
+          description: advanceReason.trim(),
+          recipient_name: advanceCustomName.trim(),
+          recorded_by: expenseRecordedBy.trim() || undefined,
+        }
+      } else if (selectedPersonKey.startsWith('driver_')) {
+        const driverId = selectedPersonKey.replace('driver_', '')
+        const driver = drivers.find((d) => d.id === driverId)
+        payload = {
+          category: 'سلف طيارين',
+          amount: amt,
+          description: advanceReason.trim() || `سلفة طيار: ${driver?.name || 'طيار'}`,
+          recipient_name: driver?.name || undefined,
+          driver_id: driverId,
+          recorded_by: expenseRecordedBy.trim() || undefined,
+        }
+      } else if (selectedPersonKey.startsWith('staff_')) {
+        const staffId = selectedPersonKey.replace('staff_', '')
+        const staff = staffList.find((s) => s.id === staffId)
+        const roleLabel = STAFF_ROLE_LABELS[staff?.role || ''] || staff?.role || 'موظف'
+        payload = {
+          category: 'سلف موظفين',
+          amount: amt,
+          description: advanceReason.trim() || `سلفة موظف: ${staff?.full_name || ''} (${roleLabel})`,
+          recipient_name: staff?.full_name || undefined,
+          staff_id: staffId,
+          recorded_by: expenseRecordedBy.trim() || undefined,
+        }
+      } else {
+        setActionError('اختيار المستلم غير صحيح')
+        return
+      }
+    } else {
+      if (!expenseDesc.trim()) {
+        setActionError('يرجى كتابة تفاصيل وبيان المصروف')
+        return
+      }
+      payload = {
+        category: expenseCategory,
+        amount: amt,
+        description: expenseDesc.trim(),
+        recipient_name: expenseRecipient.trim() || undefined,
+        recorded_by: expenseRecordedBy.trim() || undefined,
+      }
     }
 
     setIsSubmittingExpense(true)
@@ -426,13 +531,7 @@ export default function ShiftControlCenterPage() {
       const res = await fetch('/api/admin/expenses', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          category: expenseCategory,
-          amount: amt,
-          description: expenseDesc.trim(),
-          recipient_name: expenseRecipient.trim() || undefined,
-          recorded_by: expenseRecordedBy.trim() || undefined,
-        }),
+        body: JSON.stringify(payload),
       })
 
       const data = await res.json()
@@ -441,11 +540,14 @@ export default function ShiftControlCenterPage() {
         setExpenseAmount('')
         setExpenseDesc('')
         setExpenseRecipient('')
-        setActionSuccess('تم تسجيل المصروف بنجاح وإرسال تنبيه تلجرام ✓')
+        setSelectedPersonKey('')
+        setAdvanceCustomName('')
+        setAdvanceReason('')
+        setActionSuccess('تم تسجيل العملية بنجاح وخصمها من تقرير الوردية ✓')
         setTimeout(() => setActionSuccess(null), 5000)
         fetchControlCenterData()
       } else {
-        setActionError(data.error || 'تعذر تسجيل المصروف')
+        setActionError(data.error || 'تعذر تسجيل المصروف / السلفة')
       }
     } catch {
       setActionError('تعذر الاتصال بالسيرفر لتسجيل المصروف')
@@ -622,7 +724,6 @@ export default function ShiftControlCenterPage() {
 
                 <button
                   onClick={() => {
-                    setCloseShiftStaff(dailyShift.opened_by)
                     setActualCashInput('')
                     setCloseShiftNotes('')
                     setShowCloseShiftModal(true)
@@ -674,6 +775,26 @@ export default function ShiftControlCenterPage() {
                 </span>
               </div>
             </div>
+
+            {/* 🛑 Driver Custody Alert if cash in-transit */}
+            {dailyShift.driverCustodyCash && dailyShift.driverCustodyCash > 0 ? (
+              <div className="bg-amber-900/60 rounded-2xl border border-amber-500/70 p-3.5 text-xs flex items-center justify-between gap-3 text-amber-200 shadow-md">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-xl">⚠️</span>
+                  <div>
+                    <span className="font-extrabold text-amber-300 block text-xs">
+                      تنبيه عهدة كاش معلقة مع الطيارين
+                    </span>
+                    <span className="text-[11px] text-zinc-300">
+                      توجد مبالغ محصلة في الميدان لم تُورّد للخزينة بعد. يجب تسوية الرحلات قبل تقفيل الوردية.
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-amber-600 text-white px-3.5 py-1.5 rounded-xl font-black text-sm whitespace-nowrap shadow-sm">
+                  {Number(dailyShift.driverCustodyCash).toFixed(0)} ج.م مع الطيارين
+                </div>
+              </div>
+            ) : null}
 
             {/* 🛵 Driver Fleet Accounting Snapshot (Single Source of Truth) */}
             {dailyShift.fleetAccounting && (
@@ -1188,18 +1309,15 @@ export default function ShiftControlCenterPage() {
             </div>
 
             <form onSubmit={handleCloseShift} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1.5">
-                  اسم المسؤول عن تقفيل الوردية
-                </label>
-                <input
-                  type="text"
-                  value={closeShiftStaff}
-                  onChange={(e) => setCloseShiftStaff(e.target.value)}
-                  placeholder="اسم الشخص الذي قام بعدّ النقدية..."
-                  required
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-900 focus:ring-2 focus:ring-amber-500"
-                />
+              <div className="bg-amber-50/80 border border-amber-200 p-3.5 rounded-2xl flex items-center justify-between text-xs">
+                <span className="font-bold text-gray-700">المسؤول عن التقفيل (المعتمد بالجلسة):</span>
+                <span className="font-black text-amber-900 flex items-center gap-1.5">
+                  <span>👤 {currentStaff ? currentStaff.full_name : 'كاشير الوردية'}</span>
+                  <span className="text-amber-400">|</span>
+                  <span className="bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full text-[11px]">
+                    🏷️ {currentStaff ? (STAFF_ROLE_LABELS[currentStaff.role] || currentStaff.role) : 'كاشير'}
+                  </span>
+                </span>
               </div>
 
               <div>
@@ -1242,6 +1360,14 @@ export default function ShiftControlCenterPage() {
                 </div>
               )}
 
+              {/* Driver Custody Guard Warning */}
+              {dailyShift.driverCustodyCash && dailyShift.driverCustodyCash > 0 ? (
+                <div className="p-3 bg-red-50 rounded-2xl border border-red-300 text-xs text-red-900 font-bold flex items-center gap-2">
+                  <span>🛑 تنبيه أمان:</span>
+                  <span>توجد عهدة كاش معلقة في يد الطيارين ({Number(dailyShift.driverCustodyCash).toFixed(0)} ج.م). يجب تسوية وتوريد خطوط سير الطيارين للخزينة قبل تقفيل الوردية.</span>
+                </div>
+              ) : null}
+
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1.5">
                   ملاحظات التقفيل والوردية
@@ -1264,16 +1390,24 @@ export default function ShiftControlCenterPage() {
                 <button
                   type="button"
                   onClick={() => setShowCloseShiftModal(false)}
-                  className="flex-1 py-2.5 rounded-xl border border-gray-300 text-xs font-bold text-gray-600 hover:bg-gray-100"
+                  disabled={isSubmittingShift}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-300 text-xs font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-50"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingShift}
-                  className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black shadow-md disabled:opacity-50"
+                  className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black shadow-md disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                 >
-                  {isSubmittingShift ? 'جاري التقفيل...' : 'تأكيد التقفيل والإغلاق ✓'}
+                  {isSubmittingShift ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>جاري التقفيل...</span>
+                    </>
+                  ) : (
+                    <span>تأكيد التقفيل والإغلاق ✓</span>
+                  )}
                 </button>
               </div>
             </form>
@@ -1288,35 +1422,193 @@ export default function ShiftControlCenterPage() {
             <div className="flex justify-between items-center border-b pb-3">
               <h3 className="font-black text-base text-gray-900 flex items-center gap-2">
                 <span>💸</span>
-                <span>تسجيل مصروف / سلفة من درج الوردية</span>
+                <span>تسجيل سلفة أو مصروف من الدرج</span>
               </h3>
-              <button onClick={() => setShowExpenseModal(false)} className="text-gray-400 hover:text-gray-600 font-bold text-lg">
+              <button
+                onClick={() => setShowExpenseModal(false)}
+                className="text-gray-400 hover:text-gray-600 font-bold text-lg p-1"
+              >
                 ✕
               </button>
             </div>
 
+            {/* Level 1: Transaction Type Selector */}
+            <div className="grid grid-cols-2 gap-2 p-1 bg-gray-100 rounded-2xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setExpenseType('advance')
+                  setActionError(null)
+                }}
+                className={`py-2.5 px-3 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  expenseType === 'advance'
+                    ? 'bg-white text-amber-900 shadow-sm border border-amber-200'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>💸</span>
+                <span>سلفة عامل / طيار</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setExpenseType('operational')
+                  setActionError(null)
+                }}
+                className={`py-2.5 px-3 rounded-xl font-black text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                  expenseType === 'operational'
+                    ? 'bg-white text-amber-900 shadow-sm border border-amber-200'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>🧾</span>
+                <span>مصروف تشغيلي / نثريات</span>
+              </button>
+            </div>
+
             <form onSubmit={handleAddExpense} className="space-y-3.5">
-              <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
-                  تصنيف المصروف
-                </label>
-                <select
-                  value={expenseCategory}
-                  onChange={(e) => setExpenseCategory(e.target.value)}
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs font-bold bg-white text-gray-900 focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="سلف طيارين">سلف طيارين (بنزين / عهدة طيار)</option>
-                  <option value="مشتريات خضار ومستلزمات">مشتريات خضار ومستلزمات مطبخ</option>
-                  <option value="عيش ومخبوزات">عيش ومخبوزات</option>
-                  <option value="نظافة وصيانة">نظافة وصيانة سريعة</option>
-                  <option value="مصاريف تشغيلية">مصاريف تشغيلية ونثريات</option>
-                  <option value="أخرى">أخرى</option>
-                </select>
-              </div>
+              {expenseType === 'advance' ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1.5">
+                      الشخص المستلم للسلفة (من طاقم الوردية) *
+                    </label>
+                    <select
+                      value={selectedPersonKey}
+                      onChange={(e) => {
+                        setSelectedPersonKey(e.target.value)
+                        if (e.target.value !== 'other') {
+                          setAdvanceCustomName('')
+                        }
+                      }}
+                      required
+                      className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-xs font-bold bg-white text-gray-900 focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="">-- اختر الشخص المستلم --</option>
+                      {(() => {
+                        const currentShiftDrivers = drivers.filter(
+                          (d) => d.active_shift_id || d.status === 'available' || d.status === 'busy'
+                        )
+                        return currentShiftDrivers.length > 0 ? (
+                          <optgroup label="🛵 طيارين التوصيل بالوردية الحالية">
+                            {currentShiftDrivers.map((d) => (
+                              <option key={`driver_${d.id}`} value={`driver_${d.id}`}>
+                                {d.name} — (طيار دليفري {d.status === 'busy' ? '• في مشوار' : '• متاح بالفرع'})
+                              </option>
+                            ))}
+                          </optgroup>
+                        ) : null
+                      })()}
+                      {dailyShift && staffList.length > 0 && (
+                        <optgroup label="👔 طاقم العمل بالوردية الحالية">
+                          {staffList.map((s) => (
+                            <option key={`staff_${s.id}`} value={`staff_${s.id}`}>
+                              {s.full_name} — ({STAFF_ROLE_LABELS[s.role] || s.role})
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <optgroup label="➕ أخرى">
+                        <option value="other">➕ شخص آخر (تسجيل اسم جديد يدوي)</option>
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  {selectedPersonKey === 'other' ? (
+                    <div className="space-y-2.5 p-3.5 bg-amber-50/70 border border-amber-200 rounded-2xl">
+                      <div>
+                        <label className="block text-[11px] font-black text-amber-900 mb-1">
+                          اسم المستلم بالكامل *
+                        </label>
+                        <input
+                          type="text"
+                          value={advanceCustomName}
+                          onChange={(e) => setAdvanceCustomName(e.target.value)}
+                          placeholder="اكتب اسم المستلم..."
+                          required
+                          className="w-full px-3 py-2 border border-amber-300 rounded-xl text-xs bg-white text-gray-900 focus:ring-2 focus:ring-amber-500 font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-black text-amber-900 mb-1">
+                          سبب وبيان السلفة *
+                        </label>
+                        <input
+                          type="text"
+                          value={advanceReason}
+                          onChange={(e) => setAdvanceReason(e.target.value)}
+                          placeholder="مثال: سلفة نقدية طارئة، صيانة دراجة، مساعدة..."
+                          required
+                          className="w-full px-3 py-2 border border-amber-300 rounded-xl text-xs bg-white text-gray-900 focus:ring-2 focus:ring-amber-500"
+                        />
+                      </div>
+                    </div>
+                  ) : selectedPersonKey ? (
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 mb-1">
+                        سبب السلفة / ملاحظة (اختياري)
+                      </label>
+                      <input
+                        type="text"
+                        value={advanceReason}
+                        onChange={(e) => setAdvanceReason(e.target.value)}
+                        placeholder="مثال: سلفة شخصية، بنزين، عهدة مصاريف..."
+                        className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs text-gray-900 focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                      تصنيف المصروف التشغيلي *
+                    </label>
+                    <select
+                      value={expenseCategory}
+                      onChange={(e) => setExpenseCategory(e.target.value)}
+                      className="w-full px-3.5 py-2.5 border border-gray-300 rounded-xl text-xs font-bold bg-white text-gray-900 focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="مشتريات خضار ومستلزمات">مشتريات خضار ومستلزمات مطبخ</option>
+                      <option value="عيش ومخبوزات">عيش ومخبوزات</option>
+                      <option value="نظافة وصيانة">نظافة وصيانة سريعة</option>
+                      <option value="مصاريف تشغيلية">مصاريف تشغيلية ونثريات</option>
+                      <option value="أخرى">أخرى</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                      بيان وتفاصيل الصرف *
+                    </label>
+                    <input
+                      type="text"
+                      value={expenseDesc}
+                      onChange={(e) => setExpenseDesc(e.target.value)}
+                      placeholder="مثال: شراء كراتين تغليف، كرتونة زيت، تصليح خلاط..."
+                      required
+                      className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs text-gray-900 focus:ring-2 focus:ring-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                      المستلم / المورد (اختياري)
+                    </label>
+                    <input
+                      type="text"
+                      value={expenseRecipient}
+                      onChange={(e) => setExpenseRecipient(e.target.value)}
+                      placeholder="مثال: تاجر الخضار، محل المنظفات..."
+                      className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs text-gray-900"
+                    />
+                  </div>
+                </>
+              )}
 
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">
-                  المبلغ المنصرف (ج.م) *
+                  المبلغ المنصرف من الدرج (ج.م) *
                 </label>
                 <input
                   type="number"
@@ -1331,65 +1623,45 @@ export default function ShiftControlCenterPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">
-                  بيان وتفاصيل الصرف *
+                <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                  المسؤول بالدرج / الكاشير (اختياري)
                 </label>
                 <input
                   type="text"
-                  value={expenseDesc}
-                  onChange={(e) => setExpenseDesc(e.target.value)}
-                  placeholder="مثال: شراء كراتين تغليف / بنزين للطيار كريم..."
-                  required
-                  className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs text-gray-900 focus:ring-2 focus:ring-amber-500"
+                  value={expenseRecordedBy}
+                  onChange={(e) => setExpenseRecordedBy(e.target.value)}
+                  placeholder="كاشير الوردية"
+                  className="w-full px-3.5 py-2 border border-gray-300 rounded-xl text-xs text-gray-900"
                 />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                    المستلم (لمن سُلّم المبلغ)
-                  </label>
-                  <input
-                    type="text"
-                    value={expenseRecipient}
-                    onChange={(e) => setExpenseRecipient(e.target.value)}
-                    placeholder="مثال: الطيار محمد"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs text-gray-900"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                    المسؤول بالدرج
-                  </label>
-                  <input
-                    type="text"
-                    value={expenseRecordedBy}
-                    onChange={(e) => setExpenseRecordedBy(e.target.value)}
-                    placeholder="الكاشير"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs text-gray-900"
-                  />
-                </div>
               </div>
 
               <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 text-[11px] text-amber-900 font-semibold flex items-center gap-1.5">
                 <span>📢</span>
-                <span>سيصل إشعار فوري لتلجرام الإدارة ببيان المصروف وخصمه من الدرج.</span>
+                <span>سيتم خصم المبلغ فوراً من رصيد الدرج وتحديث محاسبة الوردية وإرسال إشعار تلجرام.</span>
               </div>
 
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowExpenseModal(false)}
-                  className="flex-1 py-2 rounded-xl border border-gray-300 text-xs font-bold text-gray-600 hover:bg-gray-100"
+                  disabled={isSubmittingExpense}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-300 text-xs font-bold text-gray-600 hover:bg-gray-100 disabled:opacity-50 cursor-pointer"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
                   disabled={isSubmittingExpense}
-                  className="flex-1 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black shadow-md disabled:opacity-50"
+                  className="flex-1 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black shadow-md disabled:opacity-50 flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  {isSubmittingExpense ? 'جاري التسجيل...' : 'تسجيل وخصم من الدرج ✓'}
+                  {isSubmittingExpense ? (
+                    <>
+                      <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>جاري التسجيل...</span>
+                    </>
+                  ) : (
+                    <span>تسجيل وخصم من الدرج ✓</span>
+                  )}
                 </button>
               </div>
             </form>
