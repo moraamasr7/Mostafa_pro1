@@ -1,12 +1,31 @@
-import dotenv from 'dotenv'
+import fs from 'fs'
 import path from 'path'
-import { getSupabaseServerClient } from './src/lib/supabaseServer'
+import { createClient } from '@supabase/supabase-js'
 
-dotenv.config({ path: path.resolve(process.cwd(), '.env.local') })
+// Load .env.local manually
+const envPath = path.resolve(process.cwd(), '.env.local')
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf8')
+  for (const line of envContent.split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const idx = trimmed.indexOf('=')
+    if (idx > 0) {
+      const key = trimmed.substring(0, idx).trim()
+      const val = trimmed.substring(idx + 1).trim().replace(/^['"]|['"]$/g, '')
+      process.env[key] = val
+    }
+  }
+}
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || ''
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || ''
+
+const supabase = createClient(supabaseUrl, serviceRoleKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+})
 
 async function inspectAndReset() {
-  const supabase = getSupabaseServerClient()
-
   console.log('--- 1. AUDITING CURRENT TRANSACTIONAL COUNTS ---')
   
   const [
