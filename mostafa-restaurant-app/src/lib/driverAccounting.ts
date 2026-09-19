@@ -128,8 +128,6 @@ export async function calculateFleetDriversAccounting(
       s.status === 'open' || (s.started_at >= dailyShiftOpenedAt && s.started_at <= endTime)
     )
 
-    if (targetShifts.length === 0) continue
-
     const driverNameLower = d.name.trim().toLowerCase()
     const matchedAdvances = advancesList.filter((adv) => {
       // 1. Primary Source of Truth: exact driver_id match
@@ -143,6 +141,8 @@ export async function calculateFleetDriversAccounting(
     })
     const advancesTotal = matchedAdvances.reduce((acc, curr) => acc + curr.amount, 0)
 
+    if (targetShifts.length === 0 && advancesTotal === 0) continue
+
     let driverHours = 0
     let driverHoursWage = 0
     let driverDeliveredCount = 0
@@ -151,7 +151,9 @@ export async function calculateFleetDriversAccounting(
 
     // Sort so most recent shift is first (used for primary shift metadata)
     targetShifts.sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
-    const primaryShift = targetShifts[0]
+    const primaryShift = targetShifts.length > 0
+      ? targetShifts[0]
+      : { id: 'no-shift', started_at: dailyShiftOpenedAt, ended_at: null, status: 'offline' }
 
     for (const sh of targetShifts) {
       const startTimeMs = new Date(sh.started_at).getTime()

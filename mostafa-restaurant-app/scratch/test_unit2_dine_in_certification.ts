@@ -1,3 +1,18 @@
+import fs from 'fs'
+import path from 'path'
+
+// Load .env.local
+const envPath = path.resolve(__dirname, '../.env.local')
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach((l) => {
+    const t = l.trim()
+    if (t && !t.startsWith('#')) {
+      const idx = t.indexOf('=')
+      if (idx > 0) process.env[t.slice(0, idx).trim()] = t.slice(idx + 1).trim()
+    }
+  })
+}
+
 import { getSupabaseServerClient } from '../src/lib/supabaseServer'
 import { canTransitionReservation, ReservationStatus } from '../src/types/reservations'
 import { canTransitionStatus, OrderStatus } from '../src/types/orders'

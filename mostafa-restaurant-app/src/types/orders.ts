@@ -54,7 +54,7 @@ export function canTransitionStatus(
     return false
   }
 
-  if (orderType === 'takeaway') {
+  if (orderType === 'takeaway' || orderType === 'dine_in') {
     const driverStates: OrderStatus[] = ['assigned', 'picked_up', 'out_for_delivery', 'delivered', 'failed']
     if (driverStates.includes(newStatus)) {
       return false

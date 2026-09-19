@@ -178,9 +178,9 @@ export async function calculateDailyShiftAccounting(
   for (const e of expensesList) {
     const expAmount = Number(e.amount || 0)
     const cat = (e.category || '').trim()
-    if (cat === 'سلف طيارين' || cat === 'driver_advance') {
+    if (cat === 'سلف طيارين' || cat === 'driver_advance' || Boolean(e.driver_id)) {
       driverAdvances += expAmount
-    } else if (cat === 'سلف موظفين' || cat === 'staff_advance' || cat === 'مرتبات') {
+    } else if (cat === 'سلف موظفين' || cat === 'سلف عاملين' || cat === 'staff_advance' || cat === 'مرتبات' || Boolean(e.staff_id)) {
       staffAdvances += expAmount
     } else {
       generalExpenses += expAmount

@@ -1,3 +1,18 @@
+import fs from 'fs'
+import path from 'path'
+
+// Load .env.local
+const envPath = path.resolve(__dirname, '../.env.local')
+if (fs.existsSync(envPath)) {
+  fs.readFileSync(envPath, 'utf8').split('\n').forEach((l) => {
+    const t = l.trim()
+    if (t && !t.startsWith('#')) {
+      const idx = t.indexOf('=')
+      if (idx > 0) process.env[t.slice(0, idx).trim()] = t.slice(idx + 1).trim()
+    }
+  })
+}
+
 import { getSupabaseServerClient } from '../src/lib/supabaseServer'
 import { calculateFleetDriversAccounting } from '../src/lib/driverAccounting'
 
@@ -42,11 +57,12 @@ async function runUnit3Certification() {
     .single()
 
   // 3. Create or select test driver
+  const testPhone = '010' + Math.floor(10000000 + Math.random() * 90000000)
   const { data: testDriver, error: driverErr } = await supabase
     .from('drivers')
     .insert({
       name: 'طيار اختبار Unit 3',
-      phone: '01009988776',
+      phone: testPhone,
       is_active: true,
       status: 'offline',
     })
@@ -176,11 +192,12 @@ async function runUnit3Certification() {
     console.log('\n--- GROUP 4: Double Assignment Concurrency Protection ---')
 
     // Create a 2nd driver
+    const driver2Phone = '010' + Math.floor(10000000 + Math.random() * 90000000)
     const { data: driver2 } = await supabase
       .from('drivers')
       .insert({
         name: 'طيار منافس 2',
-        phone: '01099881122',
+        phone: driver2Phone,
         is_active: true,
         status: 'offline',
       })
@@ -220,7 +237,7 @@ async function runUnit3Certification() {
       p_order_id: order1Id,
       p_new_status: 'out_for_delivery',
     })
-    assert(!outRes && outRes?.[0]?.success, 'Order 1 transition to out_for_delivery')
+    assert(!outErr && outRes?.[0]?.success, 'Order 1 transition to out_for_delivery')
 
     // Verify driver status became busy
     const { data: driverBusyCheck } = await supabase
