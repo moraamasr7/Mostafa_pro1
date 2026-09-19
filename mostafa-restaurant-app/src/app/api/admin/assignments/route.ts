@@ -92,9 +92,17 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('reassign_order_secure', {
-        p_order_id: order_id,
-        p_new_driver_id: driver_id,
+      // Cancel previous active assignment
+      await serverSupabase
+        .from('order_driver_assignments')
+        .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
+        .eq('order_id', order_id)
+        .in('status', ['assigned', 'accepted'])
+
+      // Assign to new driver using proven atomic RPC
+      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('assign_orders_to_driver_secure', {
+        p_driver_id: driver_id,
+        p_order_ids: [{ order_id }],
       })
 
       if (rpcErr) {
@@ -111,7 +119,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: res.message }, { status: 400 })
         }
         return NextResponse.json(
-          { success: true, message: res.message, new_assignment_id: res.new_assignment_id },
+          { success: true, message: res.message, trip_id: res.trip_id, trip_number: res.trip_number },
           { status: 200 }
         )
       }

@@ -57,6 +57,7 @@ export default function ManualOrderModal({
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [orderType, setOrderType] = useState<'takeaway' | 'delivery' | 'dine_in'>('takeaway')
+  const [tableNumber, setTableNumber] = useState('')
   const [deliveryAddress, setDeliveryAddress] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'instapay' | 'wallet'>('cash')
   const [orderNotes, setOrderNotes] = useState('')
@@ -99,6 +100,7 @@ export default function ManualOrderModal({
       setCustomerName('')
       setCustomerPhone('')
       setOrderType('takeaway')
+      setTableNumber('')
       setDeliveryAddress('')
       setPaymentMethod('cash')
       setOrderNotes('')
@@ -220,6 +222,13 @@ export default function ManualOrderModal({
     setSubmitting(true)
 
     try {
+      // Format notes: include table number if dine_in
+      let finalNotes = orderNotes.trim()
+      if (orderType === 'dine_in' && tableNumber.trim()) {
+        const tablePrefix = `[طاولة: ${tableNumber.trim()}]`
+        finalNotes = finalNotes ? `${tablePrefix} ${finalNotes}` : tablePrefix
+      }
+
       // NOTE: We do NOT send total_amount, order_source, daily_shift_id, or created_by_staff!
       // The server API and DB calculate and bind everything securely.
       const payload = {
@@ -228,7 +237,7 @@ export default function ManualOrderModal({
         order_type: orderType,
         payment_method: paymentMethod,
         delivery_address: orderType === 'delivery' ? deliveryAddress.trim() : null,
-        notes: orderNotes.trim() || null,
+        notes: finalNotes || null,
         items: basket.map((b) => ({
           variant_id: b.variant_id,
           quantity: b.quantity,
@@ -450,6 +459,25 @@ export default function ManualOrderModal({
                 required={orderType === 'delivery'}
                 className="w-full px-3 py-2 text-xs border border-purple-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 bg-white"
               />
+            </div>
+          )}
+
+          {/* Section 3b: Table Number (Only visible when orderType === 'dine_in') */}
+          {orderType === 'dine_in' && (
+            <div className="bg-blue-50/70 p-4 rounded-2xl border border-blue-200 space-y-2 animate-fade-in">
+              <label className="block text-[11px] font-black text-blue-900">
+                🍽️ رقم / اسم الطاولة (اختياري)
+              </label>
+              <input
+                type="text"
+                value={tableNumber}
+                onChange={(e) => setTableNumber(e.target.value)}
+                placeholder="مثال: T-01 أو طاولة 5 أو VIP-1"
+                className="w-full px-3 py-2 text-xs border border-blue-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              />
+              <p className="text-[10px] text-blue-700">
+                سيتم تضمين رقم الطاولة تلقائياً في بون المطبخ وبون الصالة المطبوع
+              </p>
             </div>
           )}
 

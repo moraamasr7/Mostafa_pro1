@@ -97,6 +97,7 @@ export default function OpsNavbar({ title, restaurantName }: OpsNavbarProps) {
 
   // Secondary Tools
   const allSecondaryLinks = [
+    { href: '/reservations', label: '🍽️ الصالة والحجوزات', roleRestricted: false },
     { href: '/reports', label: '📈 التقارير التنفيذية (Z-Report)', roleRestricted: false },
     { href: '/kitchen', label: '🍳 شاشة المطبخ (KDS)', roleRestricted: false },
     { href: '/assignments', label: '📦 توجيه الرحلات', roleRestricted: false },

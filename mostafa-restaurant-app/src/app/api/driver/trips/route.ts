@@ -120,16 +120,40 @@ export async function POST(request: NextRequest) {
     if (action === 'complete_trip') {
       if (!trip_id) return NextResponse.json({ error: 'معرف الرحلة مطلوب' }, { status: 400 })
 
-      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('complete_delivery_trip_secure', {
-        p_trip_id: trip_id,
-      })
+      // Check if unresolved orders remain in this trip
+      const { count: unresolvedCount, error: countErr } = await serverSupabase
+        .from('order_driver_assignments')
+        .select('*', { count: 'exact', head: true })
+        .eq('trip_id', trip_id)
+        .in('status', ['assigned', 'accepted', 'picked_up', 'out_for_delivery'])
 
-      if (rpcErr) {
-        return NextResponse.json({ error: rpcErr.message || 'تعذر إغلاق الرحلة، توجد طلبات معلقة' }, { status: 400 })
+      if (countErr) {
+        return NextResponse.json({ error: 'تعذر التحقق من حالة طلبات الرحلة' }, { status: 500 })
       }
 
-      const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
-      return NextResponse.json({ message: result?.message || 'تم إغلاق رحلة التوصيل بنجاح' })
+      if (unresolvedCount && unresolvedCount > 0) {
+        return NextResponse.json(
+          { error: `لا يمكن إنهاء الرحلة لوجود ${unresolvedCount} طلبات لم تُسجل نتيجتها بعد.` },
+          { status: 400 }
+        )
+      }
+
+      const { error: tripCloseErr } = await serverSupabase
+        .from('delivery_trips')
+        .update({ status: 'completed', completed_at: new Date().toISOString() })
+        .eq('id', trip_id)
+        .eq('driver_id', driverId)
+
+      if (tripCloseErr) {
+        return NextResponse.json({ error: 'فشل إنهاء رحلة التوصيل' }, { status: 500 })
+      }
+
+      await serverSupabase
+        .from('drivers')
+        .update({ status: 'available', updated_at: new Date().toISOString() })
+        .eq('id', driverId)
+
+      return NextResponse.json({ message: 'تم إغلاق رحلة التوصيل بنجاح' })
     }
 
     return NextResponse.json({ error: 'إجراء غير معروف' }, { status: 400 })

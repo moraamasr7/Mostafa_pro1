@@ -276,8 +276,10 @@ ${data.error}
     e.preventDefault()
     if (!selectedDriverForSettlement) return
 
-    setIsSettling(true)
-    setActionError(null)
+    const targetTrip = trips.find(
+      (t) => t.driver_id === selectedDriverForSettlement.id && t.collection_status === 'collected'
+    )
+    const tripId = selectedDriverForSettlement.current_trip_id || targetTrip?.id || null
 
     try {
       const res = await fetch('/api/admin/trips', {
@@ -286,7 +288,7 @@ ${data.error}
         body: JSON.stringify({
           action: 'settle_to_cashier',
           driver_id: selectedDriverForSettlement.id,
-          trip_id: selectedDriverForSettlement.current_trip_id || null,
+          trip_id: tripId,
           collected_amount: settlementAmount,
         }),
       })

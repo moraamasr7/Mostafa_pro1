@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
 
       const formattedOrderIds = order_ids.map((id: string) => ({ order_id: id }))
 
-      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('create_delivery_trip_secure', {
+      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('assign_orders_to_driver_secure', {
         p_driver_id: driver_id,
         p_order_ids: formattedOrderIds,
       })
@@ -194,20 +194,35 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'معرف خط السير مطلوب' }, { status: 400 })
       }
 
-      const { data: rpcData, error: rpcErr } = await serverSupabase.rpc('complete_delivery_trip_secure', {
-        p_trip_id: trip_id,
-      })
+      // Check if unresolved orders remain in this trip
+      const { count: unresolvedCount, error: countErr } = await serverSupabase
+        .from('order_driver_assignments')
+        .select('*', { count: 'exact', head: true })
+        .eq('trip_id', trip_id)
+        .in('status', ['assigned', 'picked_up', 'out_for_delivery'])
 
-      if (rpcErr) {
-        console.error('خطأ RPC في إغلاق خط السير:', rpcErr)
+      if (countErr) {
+        return NextResponse.json({ error: 'تعذر التحقق من حالة طلبات الرحلة' }, { status: 500 })
+      }
+
+      if (unresolvedCount && unresolvedCount > 0) {
         return NextResponse.json(
-          { error: rpcErr.message || 'فشل إغلاق خط السير' },
+          { error: `أمان العمليات: لا يمكن إغلاق خط السير لوجود ${unresolvedCount} طلبات معلقة لم تحسم نتيجتها بعد.` },
           { status: 400 }
         )
       }
 
-      const result = Array.isArray(rpcData) ? rpcData[0] : rpcData
-      return NextResponse.json({ message: result?.message || 'تم إغلاق خط السير بنجاح' })
+      const { error: tripCloseErr } = await serverSupabase
+        .from('delivery_trips')
+        .update({ status: 'completed', completed_at: new Date().toISOString() })
+        .eq('id', trip_id)
+
+      if (tripCloseErr) {
+        console.error('خطأ في إغلاق خط السير:', tripCloseErr)
+        return NextResponse.json({ error: 'فشل إغلاق خط السير' }, { status: 500 })
+      }
+
+      return NextResponse.json({ message: 'تم إغلاق خط السير بنجاح' })
     }
 
     if (action === 'update_status') {

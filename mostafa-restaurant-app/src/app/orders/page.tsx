@@ -58,7 +58,7 @@ interface Order {
   assigned_driver?: AssignedDriverInfo | null
 }
 
-type TabType = 'active' | 'delivery' | 'completed' | 'cancelled'
+type TabType = 'active' | 'dine_in' | 'takeaway' | 'delivery' | 'all' | 'completed' | 'cancelled'
 
 const STATUS_CONFIG: Record<string, { label: string; variant: BadgeVariant }> = {
   pending: { label: 'جديد ⏳', variant: 'processing' },
@@ -319,8 +319,18 @@ export default function OrdersPOSHubPage() {
   // ==========================================
   // COUNTS & FILTERING
   // ==========================================
+  const allCount = orders.length
+
   const activeCount = orders.filter((o) =>
     ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+  ).length
+
+  const dineInCount = orders.filter(
+    (o) => o.order_type === 'dine_in' && !['completed', 'cancelled', 'failed'].includes(o.status)
+  ).length
+
+  const takeawayCount = orders.filter(
+    (o) => o.order_type === 'takeaway' && !['completed', 'cancelled', 'failed'].includes(o.status)
   ).length
 
   const deliveryCount = orders.filter(
@@ -332,7 +342,10 @@ export default function OrdersPOSHubPage() {
 
   const tabs: TabItem[] = [
     { id: 'active', label: 'النشطة', count: activeCount, icon: '🔥' },
-    { id: 'delivery', label: 'التوصيل والطيارين', count: deliveryCount, icon: '🛵' },
+    { id: 'dine_in', label: 'صالة', count: dineInCount, icon: '🍽️' },
+    { id: 'takeaway', label: 'استلام', count: takeawayCount, icon: '🥡' },
+    { id: 'delivery', label: 'توصيل وطيارين', count: deliveryCount, icon: '🛵' },
+    { id: 'all', label: 'الكل', count: allCount, icon: '📋' },
     { id: 'completed', label: 'المكتملة', count: completedCount, icon: '✅' },
     { id: 'cancelled', label: 'الملغاة / تعذر', count: cancelledCount, icon: '❌' },
   ]
@@ -343,6 +356,14 @@ export default function OrdersPOSHubPage() {
     if (activeTab === 'active') {
       list = list.filter((o) =>
         ['pending', 'processing', 'ready', 'assigned', 'picked_up', 'out_for_delivery'].includes(o.status)
+      )
+    } else if (activeTab === 'dine_in') {
+      list = list.filter(
+        (o) => o.order_type === 'dine_in' && !['completed', 'cancelled', 'failed'].includes(o.status)
+      )
+    } else if (activeTab === 'takeaway') {
+      list = list.filter(
+        (o) => o.order_type === 'takeaway' && !['completed', 'cancelled', 'failed'].includes(o.status)
       )
     } else if (activeTab === 'delivery') {
       list = list.filter(
@@ -465,7 +486,8 @@ export default function OrdersPOSHubPage() {
               const isBusy = updatingOrderId === order.id
               const isMenuOpen = openMenuOrderId === order.id
               const isDelivery = order.order_type === 'delivery'
-              const isTakeaway = order.order_type === 'takeaway' || order.order_type === 'dine_in'
+              const isTakeaway = order.order_type === 'takeaway'
+              const isDineIn = order.order_type === 'dine_in'
 
               return (
                 <Card
@@ -496,7 +518,7 @@ export default function OrdersPOSHubPage() {
                     <div className="text-left shrink-0">
                       <MoneyDisplay amount={order.total_amount} size="md" variant="white" />
                       <span className="block text-[10px] text-zinc-400 mt-0.5">
-                        {isDelivery ? 'دليفري 🛵' : isTakeaway ? 'تيك أواي 🛍️' : 'صالة 🍽️'}
+                        {isDelivery ? 'دليفري 🛵' : isDineIn ? 'صالة 🍽️' : 'استلام 🥡'}
                       </span>
                     </div>
                   </div>
@@ -519,13 +541,42 @@ export default function OrdersPOSHubPage() {
 
                   {/* Delivery Address (if delivery) */}
                   {isDelivery && order.delivery_address && (
-                    <p className="text-[11px] text-zinc-400 truncate bg-zinc-950/30 px-2 py-1 rounded-lg">
-                      📍 {order.delivery_address}
-                    </p>
+                    <div className="text-[11px] text-zinc-300 bg-zinc-950/40 p-2 rounded-xl border border-zinc-800/40 flex items-start gap-1.5">
+                      <span className="shrink-0 text-purple-400">📍</span>
+                      <span className="line-clamp-2">{order.delivery_address}</span>
+                    </div>
+                  )}
+
+                  {/* Order Notes (shows table number e.g. [طاولة: T-01] if present) */}
+                  {order.notes && (
+                    <div className="text-[11px] text-zinc-300 bg-zinc-950/40 p-2 rounded-xl border border-zinc-800/40 flex items-start gap-1.5">
+                      <span className="shrink-0 text-amber-400">📝</span>
+                      <span className="line-clamp-2">{order.notes}</span>
+                    </div>
+                  )}
+
+                  {/* Items Preview */}
+                  {order.order_items && order.order_items.length > 0 && (
+                    <div className="text-[11px] space-y-1 bg-zinc-950/30 p-2 rounded-xl border border-zinc-800/30">
+                      {order.order_items.slice(0, 2).map((item) => (
+                        <div key={item.id} className="flex justify-between text-zinc-400">
+                          <span className="truncate max-w-[180px]">
+                            {item.quantity}× {item.item_variants?.menu_items?.name || 'صنف'} (
+                            {item.item_variants?.variant_name})
+                          </span>
+                          <span className="font-mono">{item.subtotal} ج.م</span>
+                        </div>
+                      ))}
+                      {order.order_items.length > 2 && (
+                        <span className="text-[10px] text-amber-400 block font-bold">
+                          +{order.order_items.length - 2} أصناف أخرى...
+                        </span>
+                      )}
+                    </div>
                   )}
 
                   {/* Bottom Action Row: Single Primary CTA + Context Menu */}
-                  <div className="flex items-center gap-2 pt-1 border-t border-zinc-800/80">
+                  <div className="flex items-center gap-2 pt-1 border-t border-zinc-800/60">
                     {/* Primary Single CTA Button for Next Action */}
                     {order.status === 'pending' && (
                       <Button
@@ -535,7 +586,7 @@ export default function OrdersPOSHubPage() {
                         onClick={() => handleStatusChange(order.id, 'pending', 'processing')}
                         className="flex-1"
                       >
-                        🍳 بدء التحضير
+                        🍳 إرسال للتحضير
                       </Button>
                     )}
 
@@ -551,7 +602,7 @@ export default function OrdersPOSHubPage() {
                       </Button>
                     )}
 
-                    {order.status === 'ready' && isTakeaway && (
+                    {order.status === 'ready' && (isTakeaway || isDineIn) && (
                       <Button
                         variant="success"
                         size="sm"
@@ -559,7 +610,7 @@ export default function OrdersPOSHubPage() {
                         onClick={() => handleStatusChange(order.id, 'ready', 'completed')}
                         className="flex-1"
                       >
-                        ✅ تسليم وإكمال
+                        {isDineIn ? '🍽️ تقديم وإكمال' : '✅ تسليم وإكمال'}
                       </Button>
                     )}
 
