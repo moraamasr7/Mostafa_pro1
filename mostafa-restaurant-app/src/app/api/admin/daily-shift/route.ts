@@ -122,6 +122,17 @@ export async function POST(request: NextRequest) {
     const { action, opened_by, initial_cash, final_cash, notes } = body
 
     if (action === 'open') {
+      // 🔒 1. التحقق من صلاحية ونشاط الموظف المسؤول
+      if (!currentStaff.is_active) {
+        return NextResponse.json({ error: 'حساب الموظف غير نشط حالياً.' }, { status: 403 })
+      }
+
+      if (!canStaffCloseShift(currentStaff.role)) {
+        return NextResponse.json({
+          error: `صلاحية الموظف الحالية (${currentStaff.role}) لا تخوّله لفتح وردية جديدة. يسمح فقط لـ (الكاشير، المالك).`
+        }, { status: 403 })
+      }
+
       const openActor = (opened_by && typeof opened_by === 'string' && opened_by.trim()) || currentStaff.full_name
 
       const { data: existing } = await serverSupabase
