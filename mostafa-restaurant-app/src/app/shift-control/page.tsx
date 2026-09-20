@@ -162,7 +162,7 @@ export default function ShiftControlPage() {
 
       const [shiftRes, scheduleRes, staffRes, driversRes] = await Promise.all([
         fetch('/api/admin/daily-shift'),
-        fetch('/api/schedule'),
+        fetch('/api/admin/schedule'),
         fetch('/api/admin/staff'),
         fetch('/api/admin/drivers'),
       ])
@@ -215,7 +215,7 @@ export default function ShiftControlPage() {
       }
 
       if (scheduleRes.ok) {
-        setOperatingHours(schedData)
+        setOperatingHours(schedData.status || schedData)
       }
 
       if (staffRes.ok && Array.isArray(staffData.staff)) {
