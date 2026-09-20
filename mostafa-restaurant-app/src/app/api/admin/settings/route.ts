@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
       .from('restaurant_policies')
       .upsert({
         key,
-        value: JSON.stringify(value),
+        value,
         updated_at: new Date().toISOString(),
       })
 
