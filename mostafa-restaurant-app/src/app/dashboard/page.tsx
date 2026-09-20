@@ -136,6 +136,11 @@ export default function DashboardCommandCenterPage() {
         fetch('/api/admin/daily-shift'),
       ])
 
+      if (dailyShiftRes.status === 401) {
+        window.location.href = '/login'
+        return
+      }
+
       const ordersData = await ordersRes.json()
       const driversData = await driversRes.json()
       const tripsData = await tripsRes.json()
@@ -145,9 +150,9 @@ export default function DashboardCommandCenterPage() {
       setDrivers(driversData.drivers || [])
       setTrips(tripsData.trips || [])
 
-      if (dailyShiftData.hasActiveShift && dailyShiftData.activeShift) {
+      if (dailyShiftRes.ok && dailyShiftData.hasActiveShift && dailyShiftData.activeShift) {
         setActiveShift(dailyShiftData.activeShift)
-      } else {
+      } else if (dailyShiftRes.ok && !dailyShiftData.hasActiveShift) {
         setActiveShift(null)
       }
     } catch (err) {
@@ -231,7 +236,7 @@ export default function DashboardCommandCenterPage() {
   // ==========================================
   const needsAttentionList: NeedsAttentionItem[] = []
 
-  if (!activeShift) {
+  if (!loading && !activeShift) {
     needsAttentionList.push({
       id: 'no_shift',
       type: 'urgent',

@@ -104,9 +104,9 @@ export default function DriversFleetHubPage() {
       ])
 
       if (driversRes.ok) {
-        if (shiftData.hasActiveShift && shiftData.activeShift) {
+        if (shiftRes.ok && shiftData.hasActiveShift && shiftData.activeShift) {
           setDailyShift(shiftData.activeShift)
-        } else {
+        } else if (shiftRes.ok && !shiftData.hasActiveShift) {
           setDailyShift(null)
         }
 

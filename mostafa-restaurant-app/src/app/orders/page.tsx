@@ -116,9 +116,9 @@ export default function OrdersPOSHubPage() {
       if (ordersRes.ok && driversRes.ok) {
         setOrders(ordersData.orders || [])
         setDrivers(driversData.drivers || [])
-        if (shiftData.hasActiveShift && shiftData.activeShift) {
+        if (shiftRes.ok && shiftData.hasActiveShift && shiftData.activeShift) {
           setDailyShift(shiftData.activeShift)
-        } else {
+        } else if (shiftRes.ok && !shiftData.hasActiveShift) {
           setDailyShift(null)
         }
       }

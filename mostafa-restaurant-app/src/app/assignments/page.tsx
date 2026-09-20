@@ -99,7 +99,7 @@ export default function AdminAssignmentsPage() {
         setIsAuthenticated(true)
         if (shiftData.hasActiveShift && shiftData.activeShift) {
           setDailyShift(shiftData.activeShift)
-        } else {
+        } else if (!shiftData.hasActiveShift) {
           setDailyShift(null)
         }
         const allOrders: DeliveryOrder[] = (ordersData.orders || []).filter(

@@ -174,6 +174,11 @@ export default function ShiftControlPage() {
         driversRes.json(),
       ])
 
+      if (shiftRes.status === 401) {
+        window.location.href = '/login'
+        return
+      }
+
       if (shiftRes.ok) {
         if (shiftData.hasActiveShift && shiftData.activeShift) {
           setActiveShift(shiftData.activeShift)
@@ -197,7 +202,7 @@ export default function ShiftControlPage() {
           if (ordersRes.data) {
             setShiftOrders(ordersRes.data as ShiftOrder[])
           }
-        } else {
+        } else if (!shiftData.hasActiveShift) {
           setActiveShift(null)
           setLastClosedShift(shiftData.lastClosedShift || null)
           setShiftExpenses([])
@@ -281,9 +286,14 @@ export default function ShiftControlPage() {
         setActionSuccess('تم فتح الوردية بنجاح')
         setInitialCashInput('0')
         setOpenShiftNotes('')
-        loadShiftData(false)
+        await loadShiftData(false)
       } else {
-        setActionError(data.error || 'فشل فتح الوردية')
+        if (res.status === 400 || (data.error && data.error.includes('مفتوحة'))) {
+          setActionError(data.error || 'توجد بالفعل وردية مفتوحة')
+          await loadShiftData(false)
+        } else {
+          setActionError(data.error || 'فشل فتح الوردية')
+        }
       }
     } catch {
       setActionError('تعذر الاتصال بالسيرفر')
@@ -446,7 +456,7 @@ export default function ShiftControlPage() {
           </div>
         )}
 
-        {loading && !activeShift && !lastClosedShift ? (
+        {loading ? (
           <div className="py-24 text-center text-xs text-zinc-500 animate-pulse">
             جاري تحميل بيانات الوردية والخزينة...
           </div>

@@ -41,7 +41,7 @@ export default function GlobalShiftBar({ onShiftStateChange }: GlobalShiftBarPro
     if (!isBackground) setLoading(true)
     try {
       const res = await fetch('/api/admin/daily-shift')
-      if (!res.ok) {
+      if (res.status === 401) {
         setHasActiveShift(false)
         setShiftData(null)
         openedAtRef.current = null
@@ -49,33 +49,32 @@ export default function GlobalShiftBar({ onShiftStateChange }: GlobalShiftBarPro
         return
       }
 
-      const data = await res.json()
-      if (data.currentStaff) {
-        setCurrentStaff(data.currentStaff)
-      }
-
-      if (data.hasActiveShift && data.activeShift) {
-        setHasActiveShift(true)
-        setShiftData(data.activeShift)
-        openedAtRef.current = data.activeShift.opened_at || null
-        if (onShiftStateChange) onShiftStateChange(true)
-
-        if (data.activeShift.opened_at) {
-          const openedTime = new Date(data.activeShift.opened_at).getTime()
-          const now = Date.now()
-          setElapsedMinutes(Math.max(0, Math.floor((now - openedTime) / 60000)))
+      if (res.ok) {
+        const data = await res.json()
+        if (data.currentStaff) {
+          setCurrentStaff(data.currentStaff)
         }
-      } else {
-        setHasActiveShift(false)
-        setShiftData(null)
-        openedAtRef.current = null
-        if (onShiftStateChange) onShiftStateChange(false)
+
+        if (data.hasActiveShift && data.activeShift) {
+          setHasActiveShift(true)
+          setShiftData(data.activeShift)
+          openedAtRef.current = data.activeShift.opened_at || null
+          if (onShiftStateChange) onShiftStateChange(true)
+
+          if (data.activeShift.opened_at) {
+            const openedTime = new Date(data.activeShift.opened_at).getTime()
+            const now = Date.now()
+            setElapsedMinutes(Math.max(0, Math.floor((now - openedTime) / 60000)))
+          }
+        } else if (!data.hasActiveShift) {
+          setHasActiveShift(false)
+          setShiftData(null)
+          openedAtRef.current = null
+          if (onShiftStateChange) onShiftStateChange(false)
+        }
       }
     } catch {
-      setHasActiveShift(false)
-      setShiftData(null)
-      openedAtRef.current = null
-      if (onShiftStateChange) onShiftStateChange(false)
+      // Keep existing state or mark unauthenticated on hard error
     } finally {
       setLoading(false)
     }

@@ -45,7 +45,7 @@ export default function KitchenDisplayPage() {
         const shiftData = await shiftRes.json()
         if (shiftData.hasActiveShift && shiftData.activeShift) {
           setDailyShift(shiftData.activeShift)
-        } else {
+        } else if (!shiftData.hasActiveShift) {
           setDailyShift(null)
         }
       }
