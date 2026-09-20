@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
 
     if (!canStaffManageSettings(staff.role)) {
       return NextResponse.json(
-        { error: 'غير مصرح لك بتعديل مواعيد العمل والتشغيل. هذه العملية مقتصرة على المدير والمالك فقط.' },
+        { error: 'غير مصرح لك بتعديل مواعيد العمل والتشغيل. هذه العملية مقتصرة على المالك فقط.' },
         { status: 403 }
       )
     }

@@ -410,7 +410,7 @@ export default function ShiftControlPage() {
 
   const canClose = useMemo(() => {
     if (!currentStaff) return false
-    return ['owner', 'manager', 'cashier'].includes(currentStaff.role)
+    return ['owner', 'cashier'].includes(currentStaff.role)
   }, [currentStaff])
 
   const isStoreClosed = operatingHours ? !operatingHours.isOpen : true

@@ -35,16 +35,28 @@ export default function AdminSchedulePage() {
   const [overrideReason, setOverrideReason] = useState('')
   const [isAddingOverride, setIsAddingOverride] = useState(false)
 
+  const [isOwner, setIsOwner] = useState<boolean | null>(null)
+
   const fetchScheduleData = async () => {
     setLoading(true)
     setActionError(null)
 
     try {
-      const res = await fetch('/api/admin/schedule')
+      const [res, staffRes] = await Promise.all([
+        fetch('/api/admin/schedule'),
+        fetch('/api/admin/staff'),
+      ])
       const data = await res.json()
+      const staffData = await staffRes.json().catch(() => ({}))
+
+      if (staffData.currentStaff) {
+        setIsAuthenticated(true)
+        setIsOwner(staffData.currentStaff.role === 'owner')
+      } else {
+        setIsAuthenticated(false)
+      }
 
       if (res.ok) {
-        setIsAuthenticated(true)
         setStatus(data.status)
         setSpecialClosures(data.special_closures || [])
         setScheduleOverrides(data.schedule_overrides || [])
@@ -77,10 +89,7 @@ export default function AdminSchedulePage() {
   }
 
   useEffect(() => {
-    const load = async () => {
-      await fetchScheduleData()
-    }
-    load()
+    fetchScheduleData()
 
     const channel = supabase
       .channel('admin-schedule-page')
@@ -93,38 +102,6 @@ export default function AdminSchedulePage() {
       supabase.removeChannel(channel)
     }
   }, [])
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoginError('')
-    setIsLoggingIn(true)
-
-    try {
-      const res = await fetch('/api/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passcode }),
-      })
-
-      const data = await res.json()
-      if (res.ok) {
-        setIsAuthenticated(true)
-        setPasscode('')
-        fetchScheduleData()
-      } else {
-        setLoginError(data.error || 'رمز الدخول غير صحيح')
-      }
-    } catch {
-      setLoginError('تعذر الاتصال بالسيرفر')
-    } finally {
-      setIsLoggingIn(false)
-    }
-  }
-
-  const handleLogout = async () => {
-    await fetch('/api/admin/logout', { method: 'POST' })
-    setIsAuthenticated(false)
-  }
 
   const handleSaveWeeklyHours = async () => {
     setIsSaving(true)
@@ -286,50 +263,56 @@ export default function AdminSchedulePage() {
     }
   }
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 font-sans">
+        <div className="p-8 text-center text-gray-500 font-bold bg-white rounded-3xl border border-gray-200 shadow-sm">
+          <div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+          جاري التحقق من الصلاحيات وجلب جدول المواعيد...
+        </div>
+      </div>
+    )
+  }
+
   if (isAuthenticated === false) {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-amber-900 to-zinc-900 flex items-center justify-center p-4">
-        <div className="w-full max-w-sm bg-white/95 backdrop-blur-xl rounded-3xl p-8 shadow-2xl border border-white/20 animate-fade-in-up">
-          <div className="text-center mb-6">
-            <span className="text-5xl block mb-2">📅</span>
-            <h1 className="text-xl font-extrabold text-gray-900">
-              دخول إدارة جدول ومواعيد عمل المطعم
-            </h1>
-            <p className="text-xs text-gray-500 mt-1">
-              أدخل كود الإدارة لتعديل مواعيد العمل الرسمية والعطلات
-            </p>
-          </div>
-
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">
-                كود الإدارة / الكاشير
-              </label>
-              <input
-                type="password"
-                value={passcode}
-                onChange={(e) => setPasscode(e.target.value)}
-                placeholder="أدخل رمز المرور..."
-                required
-                className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-amber-500 text-center font-bold tracking-widest text-lg bg-gray-50 text-gray-900"
-              />
-            </div>
-
-            {loginError && (
-              <p className="text-red-600 text-xs font-semibold text-center bg-red-50 p-2 rounded-xl border border-red-100">
-                ⚠️ {loginError}
-              </p>
-            )}
-
-            <button
-              type="submit"
-              disabled={isLoggingIn || !passcode}
-              className="w-full bg-gradient-to-l from-amber-700 to-amber-600 hover:from-amber-800 text-white font-bold py-3.5 rounded-xl text-sm transition-all shadow-md shadow-amber-900/30 disabled:opacity-50"
-            >
-              {isLoggingIn ? 'جاري التحقق...' : 'دخول اللوحة ✓'}
-            </button>
-          </form>
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4 font-sans">
+        <div className="w-full max-w-sm bg-white rounded-3xl p-8 shadow-xl border border-gray-200 text-center space-y-4">
+          <span className="text-5xl block">🔒</span>
+          <h2 className="text-lg font-black text-gray-900">تسجيل الدخول مطلوب</h2>
+          <p className="text-xs text-gray-500">يرجى تسجيل الدخول بحساب مالك المطعم لإدارة جدول المواعيد</p>
+          <Link
+            href="/login"
+            className="block w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-xl text-xs transition-all shadow-md"
+          >
+            الانتقال لصفحة تسجيل الدخول
+          </Link>
         </div>
+      </div>
+    )
+  }
+
+  if (isOwner === false) {
+    return (
+      <div className="min-h-screen bg-gray-100 flex flex-col font-sans">
+        <OpsNavbar title="جدول ومواعيد تشغيل المطعم" subtitle="إدارة ساعات العمل الأسبوعية الدوريّة والعطلات الاستثنائية" />
+        <main className="max-w-xl mx-auto px-4 py-16 flex-1 w-full text-center">
+          <div className="bg-rose-50 border border-rose-200 p-8 rounded-3xl text-center space-y-4 shadow-sm">
+            <div className="text-4xl">⛔</div>
+            <h3 className="text-lg font-black text-rose-900">غير مصرح بالوصول</h3>
+            <p className="text-xs text-rose-700 font-bold">
+              تعديل وإدارة جدول ومواعيد عمل المطعم والإغلاقات الاستثنائية مقتصرة حصرياً على مالك المطعم (Owner Only).
+            </p>
+            <div className="pt-2">
+              <Link
+                href="/dashboard"
+                className="inline-block bg-gray-900 hover:bg-black text-white text-xs font-bold px-6 py-3 rounded-2xl shadow-sm transition-all"
+              >
+                العودة للوحة التحكم الرئيسية
+              </Link>
+            </div>
+          </div>
+        </main>
       </div>
     )
   }

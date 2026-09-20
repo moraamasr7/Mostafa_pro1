@@ -84,8 +84,8 @@ export default function OpsNavbar({ title, restaurantName }: OpsNavbarProps) {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  const userRole = currentStaff?.role ? currentStaff.role.toLowerCase() : null
-  const canManageSettings = userRole === 'owner' || userRole === 'manager' || userRole === null
+  const userRole = currentStaff?.role ? currentStaff.role.toLowerCase().trim() : null
+  const canManageSettings = userRole === 'owner'
 
   // Core 4 Navigation Links
   const coreLinks = [

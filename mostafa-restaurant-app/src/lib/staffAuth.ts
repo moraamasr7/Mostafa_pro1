@@ -6,19 +6,19 @@ export interface StaffSessionUser {
   id: string
   email: string
   full_name: string
-  role: 'owner' | 'manager' | 'cashier' | 'kitchen' | string
+  role: 'owner' | 'cashier' | 'kitchen' | string
   is_active: boolean
 }
 
-export const AUTHORIZED_SHIFT_CLOSE_ROLES = ['owner', 'manager', 'cashier']
-export const AUTHORIZED_SETTINGS_ROLES = ['owner', 'manager']
+export const AUTHORIZED_SHIFT_CLOSE_ROLES = ['owner', 'cashier']
+export const AUTHORIZED_SETTINGS_ROLES = ['owner']
 
-export function canStaffCloseShift(role: string): boolean {
-  return AUTHORIZED_SHIFT_CLOSE_ROLES.includes(role?.toLowerCase().trim())
+export function canStaffCloseShift(role?: string): boolean {
+  return AUTHORIZED_SHIFT_CLOSE_ROLES.includes(role?.toLowerCase().trim() || '')
 }
 
 export function canStaffManageSettings(role?: string): boolean {
-  return AUTHORIZED_SETTINGS_ROLES.includes(role?.toLowerCase().trim() || '')
+  return (role?.toLowerCase().trim() || '') === 'owner'
 }
 
 export async function getStaffSession(
@@ -46,49 +46,35 @@ export async function getStaffSession(
     }
   }
 
-  if (staffId) {
-    const { data: profile, error } = await serverSupabase
-      .from('staff_profiles')
-      .select('id, email, full_name, role, is_active')
-      .eq('id', staffId)
-      .maybeSingle()
-
-    if (error || !profile) {
-      return {
-        staff: null,
-        error: 'ملف الموظف غير موجود في سجلات المطعم (staff_profiles).',
-        status: 401,
-      }
-    }
-
-    if (!profile.is_active) {
-      return {
-        staff: null,
-        error: 'حساب الموظف معطل حالياً من قِبل الإدارة.',
-        status: 403,
-      }
-    }
-
-    return { staff: profile as StaffSessionUser }
-  }
-
-  // Fallback for legacy passcode sessions: load the active cashier/manager from staff_profiles
-  const { data: defaultStaff, error: defaultErr } = await serverSupabase
-    .from('staff_profiles')
-    .select('id, email, full_name, role, is_active')
-    .eq('is_active', true)
-    .in('role', ['cashier', 'owner', 'manager'])
-    .order('role', { ascending: true })
-    .limit(1)
-    .maybeSingle()
-
-  if (defaultErr || !defaultStaff) {
+  if (!staffId) {
     return {
       staff: null,
-      error: 'لا يوجد حساب موظف نشط ومصرح له في قاعدة البيانات.',
+      error: 'جلسة العمل غير صالحة. يرجى تسجيل الدخول مجدداً.',
       status: 401,
     }
   }
 
-  return { staff: defaultStaff as StaffSessionUser }
+  const { data: profile, error } = await serverSupabase
+    .from('staff_profiles')
+    .select('id, email, full_name, role, is_active')
+    .eq('id', staffId)
+    .maybeSingle()
+
+  if (error || !profile) {
+    return {
+      staff: null,
+      error: 'ملف الموظف غير موجود في سجلات المطعم (staff_profiles).',
+      status: 401,
+    }
+  }
+
+  if (!profile.is_active) {
+    return {
+      staff: null,
+      error: 'حساب الموظف معطل حالياً من قِبل الإدارة.',
+      status: 403,
+    }
+  }
+
+  return { staff: profile as StaffSessionUser }
 }

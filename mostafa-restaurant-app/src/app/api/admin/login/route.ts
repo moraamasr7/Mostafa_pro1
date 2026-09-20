@@ -1,79 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSupabaseServerClient } from '@/lib/supabaseServer'
 import { ADMIN_COOKIE_NAME } from '@/lib/staffAuth'
+import { verifyPin } from '@/lib/pinAuth'
 
 export { ADMIN_COOKIE_NAME }
 
 export async function POST(request: NextRequest) {
   try {
-    const adminPasscode = process.env.ADMIN_PASSCODE
-
-    if (!adminPasscode) {
-      console.error('CRITICAL: ADMIN_PASSCODE environment variable is missing!')
-      return NextResponse.json(
-        { error: 'رمز الإدارة غير مهيأ في إعدادات البيئة (ADMIN_PASSCODE)' },
-        { status: 500 }
-      )
-    }
-
     const body = await request.json()
-    const { passcode, staff_id } = body
+    const pin = (body.pin || body.passcode || '') as string
+    const staffId = (body.staff_id || '') as string
+    const email = (body.email || '') as string
 
-    if (!passcode || typeof passcode !== 'string') {
+    if (!pin || typeof pin !== 'string' || !pin.trim()) {
       return NextResponse.json(
-        { error: 'رمز الدخول مطلوب' },
+        { error: 'رمز الدخول (PIN) مطلوب' },
         { status: 400 }
       )
     }
 
-    if (passcode.trim() !== adminPasscode.trim()) {
+    if (!staffId && !email) {
       return NextResponse.json(
-        { error: 'رمز الدخول غير صحيح' },
-        { status: 401 }
+        { error: 'يرجى تحديد حساب الموظف أو إدخال البريد الإلكتروني' },
+        { status: 400 }
       )
     }
 
     const serverSupabase = getSupabaseServerClient()
-    let staffRecord: { id: string; email: string; full_name: string; role: string; is_active: boolean } | null = null
 
-    if (staff_id && typeof staff_id === 'string') {
-      const { data, error } = await serverSupabase
-        .from('staff_profiles')
-        .select('id, email, full_name, role, is_active')
-        .eq('id', staff_id.trim())
-        .maybeSingle()
+    let query = serverSupabase
+      .from('staff_profiles')
+      .select('id, email, full_name, role, is_active, pin_hash')
 
-      if (error || !data) {
-        return NextResponse.json(
-          { error: 'ملف الموظف المحدد غير موجود في سجلات المطعم' },
-          { status: 401 }
-        )
-      }
-      if (!data.is_active) {
-        return NextResponse.json(
-          { error: 'حساب الموظف المحدد غير نشط حالياً' },
-          { status: 403 }
-        )
-      }
-      staffRecord = data
-    } else {
-      // Fallback: pick the primary active manager/cashier
-      const { data, error } = await serverSupabase
-        .from('staff_profiles')
-        .select('id, email, full_name, role, is_active')
-        .eq('is_active', true)
-        .in('role', ['cashier', 'owner', 'manager'])
-        .order('role', { ascending: true })
-        .limit(1)
-        .maybeSingle()
+    if (staffId && typeof staffId === 'string' && staffId.trim()) {
+      query = query.eq('id', staffId.trim())
+    } else if (email && typeof email === 'string' && email.trim()) {
+      query = query.eq('email', email.trim().toLowerCase())
+    }
 
-      if (error || !data) {
-        return NextResponse.json(
-          { error: 'لا يوجد حساب موظف نشط ومصرح له في قاعدة البيانات' },
-          { status: 401 }
-        )
-      }
-      staffRecord = data
+    const { data: staffRecord, error } = await query.maybeSingle()
+
+    if (error || !staffRecord) {
+      return NextResponse.json(
+        { error: 'ملف الموظف غير موجود في سجلات المطعم' },
+        { status: 401 }
+      )
+    }
+
+    if (!staffRecord.is_active) {
+      return NextResponse.json(
+        { error: 'حساب الموظف المحدد غير نشط حالياً' },
+        { status: 403 }
+      )
+    }
+
+    if (!staffRecord.pin_hash) {
+      return NextResponse.json(
+        { error: 'لم يتم تهيئة رمز الدخول لهذا الحساب. يرجى مراجعة إدارة المطعم.' },
+        { status: 401 }
+      )
+    }
+
+    const isPinValid = verifyPin(pin.trim(), staffRecord.pin_hash)
+
+    if (!isPinValid) {
+      return NextResponse.json(
+        { error: 'رمز الدخول (PIN) غير صحيح' },
+        { status: 401 }
+      )
     }
 
     const response = NextResponse.json(
@@ -103,7 +97,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error('خطأ في تسجيل دخول الإدارة:', err)
     return NextResponse.json(
-      { error: 'حدث خطأ غير متوقع' },
+      { error: 'حدث خطأ غير متوقع أثناء تسجيل الدخول' },
       { status: 500 }
     )
   }

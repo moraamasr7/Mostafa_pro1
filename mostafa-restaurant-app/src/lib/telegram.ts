@@ -354,3 +354,34 @@ export async function notifyNewOrder(data: {
 
   return sendTelegramMessage(msg)
 }
+
+export async function notifyPinChanged(data: {
+  employeeName: string
+  staffId: string
+  role: string
+  actorName: string
+  actorId: string
+}): Promise<TelegramSendResult> {
+  const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Cairo' })
+  const date = new Date().toLocaleDateString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Africa/Cairo' })
+
+  const msg = [
+    `🔐 <b>SECURITY ALERT — PIN CHANGED</b>`,
+    `━━━━━━━━━━━━━━━━━━━`,
+    `👤 <b>Employee:</b> ${data.employeeName}`,
+    `🆔 <b>Staff ID:</b> <code>${data.staffId}</code>`,
+    `🎭 <b>Role:</b> <code>${data.role}</code>`,
+    ``,
+    `👮 <b>Changed By:</b> ${data.actorName}`,
+    `🆔 <b>Actor ID:</b> <code>${data.actorId}</code>`,
+    ``,
+    `🕐 <b>Time:</b> <code>${date} — ${time} Cairo</code>`,
+    `🔑 <b>Event:</b> STAFF PIN CHANGED`,
+    `✅ <b>Status:</b> SUCCESS`,
+    ``,
+    `⚠️ <b>Security Notice:</b>`,
+    `A staff PIN was successfully changed.`,
+  ].join('\n')
+
+  return sendTelegramMessage(msg)
+}

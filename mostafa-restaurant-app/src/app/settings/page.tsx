@@ -24,9 +24,16 @@ interface PaymentAccounts {
   }
 }
 
+interface StaffProfile {
+  id: string
+  full_name: string
+  role: string
+}
+
 export default function SettingsPage() {
   const [policies, setPolicies] = useState<PolicyItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [accessDenied, setAccessDenied] = useState<string | null>(null)
   const [savingKey, setSavingKey] = useState<string | null>(null)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
 
@@ -49,13 +56,27 @@ export default function SettingsPage() {
   // Operating Hours summary
   const [scheduleStatus, setScheduleStatus] = useState<{ isOpen: boolean; reason: string } | null>(null)
 
+  // Staff PIN Management
+  const [staffList, setStaffList] = useState<StaffProfile[]>([])
+  const [pinTargetStaffId, setPinTargetStaffId] = useState<string>('')
+  const [newPinValue, setNewPinValue] = useState<string>('')
+  const [isUpdatingPin, setIsUpdatingPin] = useState(false)
+
   const fetchSettings = async () => {
     setLoading(true)
+    setAccessDenied(null)
     try {
-      const [settingsRes, scheduleRes] = await Promise.all([
+      const [settingsRes, scheduleRes, staffRes] = await Promise.all([
         fetch('/api/admin/settings'),
         fetch('/api/admin/schedule'),
+        fetch('/api/admin/staff'),
       ])
+
+      if (settingsRes.status === 403) {
+        setAccessDenied('غير مصرح بالوصول: صفحة إعدادات وسياسات المطعم مقتصرة حصرياً على مالك المطعم (Owner Only).')
+        setLoading(false)
+        return
+      }
 
       const settingsData = await settingsRes.json()
       if (settingsRes.ok && settingsData.policies) {
@@ -88,6 +109,16 @@ export default function SettingsPage() {
         const schedData = await scheduleRes.json()
         if (schedData.status) {
           setScheduleStatus(schedData.status)
+        }
+      }
+
+      if (staffRes.ok) {
+        const sData = await staffRes.json()
+        if (sData.staff && Array.isArray(sData.staff)) {
+          setStaffList(sData.staff)
+          if (sData.staff.length > 0 && !pinTargetStaffId) {
+            setPinTargetStaffId(sData.staff[0].id)
+          }
         }
       }
     } catch {
@@ -139,6 +170,57 @@ export default function SettingsPage() {
     savePolicy('reservation_payment_accounts', payload, 'تم حفظ حسابات دفع عربون الحجز بنجاح ✅')
   }
 
+  const handleUpdatePin = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!pinTargetStaffId) {
+      setMessage({ type: 'error', text: 'يرجى اختيار الموظف أولاً' })
+      return
+    }
+    if (!newPinValue.trim() || newPinValue.trim().length < 4) {
+      setMessage({ type: 'error', text: 'رمز الـ PIN يجب ألا يقل عن 4 أرقام' })
+      return
+    }
+
+    setIsUpdatingPin(true)
+    setMessage(null)
+
+    try {
+      const res = await fetch('/api/admin/staff/pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          staff_id: pinTargetStaffId,
+          new_pin: newPinValue.trim(),
+        }),
+      })
+
+      const data = await res.json()
+      if (res.ok) {
+        setMessage({ type: 'success', text: `${data.message} (تم إرسال إشعار الأمان إلى Telegram 🔔)` })
+        setNewPinValue('')
+      } else {
+        setMessage({ type: 'error', text: data.error || 'فشل تغيير رمز الدخول' })
+      }
+    } catch {
+      setMessage({ type: 'error', text: 'تعذر الاتصال بالخادم لتحديث الـ PIN' })
+    } finally {
+      setIsUpdatingPin(false)
+    }
+  }
+
+  const getRoleLabel = (role: string) => {
+    switch (role) {
+      case 'owner':
+        return '👑 المالك'
+      case 'cashier':
+        return '💰 الكاشير'
+      case 'kitchen':
+        return '🍳 المطبخ'
+      default:
+        return role
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-100 text-gray-900 flex flex-col font-sans">
       <OpsNavbar title="مركز السياسات والإعدادات المركزية" subtitle="إدارة قيود التسليم، المحاسبة، حسابات الدفع، وأوقات العمل" />
@@ -159,9 +241,9 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-800 border border-emerald-200 px-4 py-2 rounded-2xl text-xs font-black">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            صلاحيات إدارة كاملة (Manager / Owner)
+          <div className="flex items-center gap-2 bg-amber-50 text-amber-900 border border-amber-300 px-4 py-2 rounded-2xl text-xs font-black">
+            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+            صلاحيات المالك فقط (Owner Only)
           </div>
         </div>
 
@@ -182,7 +264,21 @@ export default function SettingsPage() {
         {loading ? (
           <div className="p-20 text-center text-gray-400 font-bold bg-white rounded-3xl border border-gray-200">
             <div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
-            جاري جلب بيانات السياسات المركزية...
+            جاري التحقق من الصلاحيات وجلب السياسات...
+          </div>
+        ) : accessDenied ? (
+          <div className="bg-rose-50 border border-rose-200 p-8 rounded-3xl text-center space-y-4">
+            <div className="text-4xl">⛔</div>
+            <h3 className="text-lg font-black text-rose-900">غير مصرح بالوصول</h3>
+            <p className="text-xs text-rose-700 font-bold max-w-md mx-auto">{accessDenied}</p>
+            <div className="pt-2">
+              <Link
+                href="/dashboard"
+                className="inline-block bg-gray-900 hover:bg-black text-white text-xs font-bold px-6 py-3 rounded-2xl shadow-sm transition-all"
+              >
+                العودة للوحة التحكم الرئيسية
+              </Link>
+            </div>
           </div>
         ) : (
           <div className="space-y-8">
@@ -346,7 +442,68 @@ export default function SettingsPage() {
               </div>
             </section>
 
-            {/* Section 3: Reservation & Deposit Payment Accounts */}
+            {/* Section 3: Staff PIN Management (Security Control) */}
+            <section className="space-y-4">
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-lg">🔑</span>
+                <h2 className="text-base font-black text-gray-900">إدارة الـ PIN ورموز مرور طاقم العمل</h2>
+                <span className="text-xs text-gray-400 font-normal">| Staff PIN Security & Alerts</span>
+              </div>
+
+              <div className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-gray-500">
+                    يمكن للمالك فقط تغيير وتعيين رمز مرور (PIN) سري لأي موظف. كل تعديل يُرسل فوراً كـ Security Alert إلى Telegram.
+                  </p>
+                  <span className="text-[11px] font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
+                    🔔 Telegram Alert Enabled
+                  </span>
+                </div>
+
+                <form onSubmit={handleUpdatePin} className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2">
+                  <div>
+                    <label className="text-[11px] font-bold text-gray-600 block mb-1">اختر الموظف المستهدف:</label>
+                    <select
+                      value={pinTargetStaffId}
+                      onChange={(e) => setPinTargetStaffId(e.target.value)}
+                      className="w-full bg-gray-50 border border-gray-300 rounded-xl py-2.5 px-3 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    >
+                      {staffList.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.full_name} ({getRoleLabel(s.role)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-bold text-gray-600 block mb-1">رمز الـ PIN الجديد (4 - 10 أرقام):</label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="أدخل الـ PIN الجديد..."
+                      value={newPinValue}
+                      onChange={(e) => setNewPinValue(e.target.value)}
+                      className="w-full bg-gray-50 border border-gray-300 rounded-xl py-2.5 px-3 text-xs font-bold focus:outline-none focus:ring-2 focus:ring-amber-500 text-center tracking-widest text-base"
+                      maxLength={10}
+                    />
+                  </div>
+
+                  <div className="flex items-end">
+                    <button
+                      type="submit"
+                      disabled={isUpdatingPin || !newPinValue.trim()}
+                      className="w-full bg-amber-600 hover:bg-amber-700 text-white font-black text-xs py-3 px-4 rounded-xl transition-all shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      <span>🔒</span>
+                      <span>{isUpdatingPin ? 'جاري التحديث والتنبيه...' : 'تحديث الـ PIN وإرسال التنبيه'}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            {/* Section 4: Reservation & Deposit Payment Accounts */}
             <section className="space-y-4">
               <div className="flex items-center gap-2 px-1">
                 <span className="text-lg">💳</span>
@@ -448,7 +605,7 @@ export default function SettingsPage() {
               </div>
             </section>
 
-            {/* Section 4: Operating Hours & Schedule Overview */}
+            {/* Section 5: Operating Hours & Schedule Overview */}
             <section className="space-y-4">
               <div className="flex items-center gap-2 px-1">
                 <span className="text-lg">🕒</span>

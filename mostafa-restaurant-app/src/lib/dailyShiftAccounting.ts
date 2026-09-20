@@ -140,12 +140,21 @@ export async function calculateDailyShiftAccounting(
       totalSales += amount
 
       if (method === 'cash') {
-        if (o.collection_status === 'settled_to_cashier') {
-          cashSales += amount
-        } else if (o.collection_status === 'collected') {
-          driverCustodyCash += amount
+        if (o.order_type === 'delivery') {
+          if (o.collection_status === 'settled_to_cashier') {
+            cashSales += amount
+          } else if (o.collection_status === 'collected') {
+            driverCustodyCash += amount
+          } else {
+            uncollectedCash += amount
+          }
         } else {
-          uncollectedCash += amount
+          // Takeaway & Dine-in cash orders are collected directly at the cashier counter
+          if (o.collection_status === 'uncollected') {
+            uncollectedCash += amount
+          } else {
+            cashSales += amount
+          }
         }
       } else if (method === 'instapay') {
         instapaySales += amount

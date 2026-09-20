@@ -6,7 +6,7 @@ import { ReservationStatus, canTransitionReservation } from '@/types/reservation
 
 export const dynamic = 'force-dynamic'
 
-const AUTHORIZED_ROLES = ['owner', 'manager', 'cashier']
+const AUTHORIZED_ROLES = ['owner', 'cashier']
 
 export async function GET(request: NextRequest) {
   try {
